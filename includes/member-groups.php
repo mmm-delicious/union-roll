@@ -388,13 +388,34 @@ add_action('template_redirect', function () {
         wp_safe_redirect(add_query_arg('redirect_to', rawurlencode($back), $login));
         exit;
     }
-    nocache_headers();
-    wp_die(
-        '<p>' . esc_html(ur_mg_settings()['denied_message']) . '</p>',
-        esc_html__('Members of this group only', 'union-roll'),
-        ['response' => 403, 'link_url' => home_url('/'), 'link_text' => 'Back to home']
-    );
+    // Redirect to a neutral URL so the restricted item's title/SEO tags never reach the page <head>.
+    wp_safe_redirect(add_query_arg('ur_mg_denied', '1', home_url('/')));
+    exit;
 }, 5);
+
+// Friendly "members of this group only" page, inside the site's header and footer.
+add_action('template_redirect', function () {
+    if (empty($_GET['ur_mg_denied'])) return;
+    if (!is_user_logged_in()) {
+        wp_safe_redirect(home_url('/'));
+        exit;
+    }
+    status_header(403);
+    nocache_headers();
+    add_filter('pre_get_document_title', function () { return 'Members only | ' . get_bloginfo('name'); }, 99);
+    add_filter('wpseo_robots', function () { return 'noindex, nofollow'; }, 99);
+    get_header();
+    $msg = ur_mg_settings()['denied_message'];
+    echo '<main id="content" class="site-main ur-mg-denied" style="max-width:720px;margin:64px auto;padding:0 20px;text-align:center">'
+        . '<h1 style="margin-bottom:16px">Members of this group only</h1>'
+        . '<p style="font-size:1.1em;line-height:1.6">' . esc_html($msg) . '</p>'
+        . '<p style="margin-top:28px;display:flex;gap:12px;justify-content:center;flex-wrap:wrap">'
+        . '<a class="elementor-button" style="padding:12px 24px" href="' . esc_url(home_url('/#for-you')) . '">See what\'s for you</a>'
+        . '<a class="elementor-button" style="padding:12px 24px;background:transparent;border:2px solid currentColor;color:inherit" href="' . esc_url(home_url('/')) . '">Back to home</a>'
+        . '</p></main>';
+    get_footer();
+    exit;
+}, 4);
 
 // REST single items (collections are covered by pre_get_posts).
 add_filter('rest_request_before_callbacks', function ($response, $handler, $request) {
@@ -450,9 +471,15 @@ add_filter('wpseo_exclude_from_sitemap_by_post_ids', function ($ids) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function ur_mg_dp_post_id_from_key($key) {
-    if (!$key || !function_exists('wpmem_dp_get_file_post')) return 0;
-    $p = wpmem_dp_get_file_post($key);
-    return ($p && !empty($p->ID)) ? (int) $p->ID : 0;
+    $key = (string) $key;
+    if ($key === '') return 0;
+    if (function_exists('wpmem_dp_get_file_post')) {
+        $p = wpmem_dp_get_file_post($key);
+        if ($p && !empty($p->ID)) return (int) $p->ID;
+    }
+    global $wpdb;
+    return (int) $wpdb->get_var($wpdb->prepare(
+        "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_wpmem_dp_key' AND meta_value = %s LIMIT 1", $key));
 }
 
 // The actual download request. Runs after WP-Members' own login check.
@@ -465,12 +492,9 @@ add_action('wpmem_dp_verify', function ($args) {
         wp_safe_redirect(wp_login_url());
         exit;
     }
-    nocache_headers();
-    wp_die(
-        '<p>' . esc_html(ur_mg_settings()['denied_message']) . '</p>',
-        esc_html__('Members of this group only', 'union-roll'),
-        ['response' => 403, 'link_url' => home_url('/'), 'link_text' => 'Back to home']
-    );
+    // Runs on init (before the theme is ready): send the member to the friendly page.
+    wp_safe_redirect(add_query_arg('ur_mg_denied', '1', home_url('/')));
+    exit;
 }, 20);
 
 // Video/audio players and anything else that asks.
@@ -547,9 +571,186 @@ add_filter('elementor/element/is_dynamic_content', function ($is_dynamic, $raw_d
     $s = (array) ($raw_data['settings'] ?? []);
     $classes = (string) ($s['_css_classes'] ?? '') . ' ' . (string) ($s['css_classes'] ?? '');
     if (strpos($classes, 'ur-group-') !== false) return true;
+    // Third-party widgets that list posts or events build their output from a query: never cache them.
+    $type = (string) ($raw_data['widgetType'] ?? '');
+    if ($type !== '' && strpos($type, 'eael-') === 0 && preg_match('/post|event|ticker|timeline|calendar/', $type)) return true;
     $json = (string) wp_json_encode($s);
-    return strpos($json, 'ur_group_only') !== false || strpos($json, 'wpmem_file') !== false;
+    foreach (['ur_group_only', 'wpmem_file', 'ur_for_you', 'ur_my_division', 'a=download'] as $needle) {
+        if (strpos($json, $needle) !== false) return true;
+    }
+    return false;
 }, 10, 2);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hide links to contracts/files a logged-in member can't open (any Elementor widget or post).
+// Logged-out visitors still see them; clicking leads to the login page.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ur_mg_key_denied($key) {
+    static $cache = [];
+    $ck = get_current_user_id() . ':' . $key;
+    if (isset($cache[$ck])) return $cache[$ck];
+    $pid = ur_mg_dp_post_id_from_key($key);
+    return $cache[$ck] = ($pid && !ur_mg_user_can_view($pid));
+}
+
+function ur_mg_should_filter_links() {
+    return is_user_logged_in() && ur_mg_has_restrictions() && !ur_mg_user_context()['staff'];
+}
+
+/** Remove list items, then unwrap links, that point at a download the member can't open. */
+function ur_mg_strip_denied_links($html) {
+    if (strpos($html, 'key=') === false || !ur_mg_should_filter_links()) return $html;
+    $denied = function ($chunk) {
+        if (!preg_match_all('/key=([a-f0-9]{32})/', $chunk, $m)) return false;
+        foreach ($m[1] as $k) if (ur_mg_key_denied($k)) return true;
+        return false;
+    };
+    $html = preg_replace_callback('#<li\b[^>]*>.*?</li>#s', function ($m) use ($denied) {
+        return $denied($m[0]) ? '' : $m[0];
+    }, $html);
+    return preg_replace_callback('#<a\b[^>]*href=["\'][^"\']*key=[a-f0-9]{32}[^"\']*["\'][^>]*>(.*?)</a>#s', function ($m) use ($denied) {
+        return $denied($m[0]) ? $m[1] : $m[0];
+    }, $html);
+}
+
+add_filter('elementor/widget/render_content', function ($content) {
+    return ur_mg_strip_denied_links((string) $content);
+}, 20);
+add_filter('the_content', 'ur_mg_strip_denied_links', 20);
+
+// A widget whose main link is a download the member can't open (e.g. a contract card) is hidden entirely.
+add_filter('elementor/frontend/widget/should_render', function ($should, $widget) {
+    if (!$should || !ur_mg_should_filter_links() || !is_object($widget) || !method_exists($widget, 'get_settings')) return $should;
+    $link = $widget->get_settings('link');
+    $url  = is_array($link) ? (string) ($link['url'] ?? '') : '';
+    if ($url !== '' && preg_match('/key=([a-f0-9]{32})/', $url, $m) && ur_mg_key_denied($m[1])) return false;
+    return $should;
+}, 20, 2);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// [ur_for_you] — contracts, news and upcoming events tagged for the member's groups.
+// Shows nothing to logged-out visitors, staff, or members with nothing tagged for them.
+// Admins can preview as a member with ?ur_preview_user=<user ID>.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ur_mg_for_you_items($user_id, $limit = 5) {
+    $ctx = ur_mg_user_context($user_id);
+    if ($ctx['staff'] || !$ctx['groups']) return null;
+    $ids = ur_mg_objects_in_groups($ctx['groups']);
+    $out = ['contracts' => [], 'news' => [], 'events' => []];
+    if (!$ids) return $out;
+    $now = current_time('mysql');
+    foreach ($ids as $id) {
+        $p = get_post($id);
+        if (!$p) continue;
+        if ($p->post_type === 'attachment' && ($k = get_post_meta($id, '_wpmem_dp_key', true))) {
+            $out['contracts'][] = ['title' => $p->post_title, 'url' => add_query_arg(['a' => 'download', 'key' => $k], home_url('/')), 'sort' => $p->post_title];
+        } elseif ($p->post_type === 'post' && $p->post_status === 'publish') {
+            $out['news'][] = ['title' => $p->post_title, 'url' => get_permalink($p), 'sort' => $p->post_date, 'meta' => get_the_date('', $p)];
+        } elseif ($p->post_type === 'tribe_events' && $p->post_status === 'publish') {
+            $start = (string) get_post_meta($id, '_EventStartDate', true);
+            if ($start !== '' && $start >= $now) {
+                $out['events'][] = ['title' => $p->post_title, 'url' => get_permalink($p), 'sort' => $start, 'meta' => mysql2date('D, M j, Y', $start)];
+            }
+        }
+    }
+    usort($out['contracts'], function ($a, $b) { return strcasecmp($a['sort'], $b['sort']); });
+    usort($out['news'], function ($a, $b) { return strcmp($b['sort'], $a['sort']); });
+    usort($out['events'], function ($a, $b) { return strcmp($a['sort'], $b['sort']); });
+    foreach ($out as $k => $v) $out[$k] = array_slice($v, 0, $limit);
+    return $out;
+}
+
+add_shortcode('ur_for_you', function ($atts) {
+    $atts = shortcode_atts(['limit' => 5, 'title' => 'For You'], $atts, 'ur_for_you');
+    if (!is_user_logged_in()) return '';
+    $uid = get_current_user_id();
+    if (current_user_can('manage_options') && !empty($_GET['ur_preview_user'])) $uid = (int) $_GET['ur_preview_user'];
+    $items = ur_mg_for_you_items($uid, max(1, (int) $atts['limit']));
+    if (!$items || !array_filter($items)) return '';
+    $cols = ['contracts' => 'Your contracts', 'news' => 'News for your unit', 'events' => 'Your upcoming meetings'];
+    $html = '<style>.ur-for-you{max-width:1140px;margin:0 auto;padding:40px 20px}.ur-for-you h2{margin:0 0 6px}.ur-for-you .ur-fy-sub{margin:0 0 22px;opacity:.8}'
+        . '.ur-fy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px}'
+        . '.ur-fy-card{background:#fff;border:1px solid rgba(0,0,0,.08);border-top:4px solid var(--e-global-color-primary,#1f3a68);border-radius:6px;padding:18px 20px}'
+        . '.ur-fy-card h3{font-size:1.05em;margin:0 0 10px}.ur-fy-card ul{list-style:none;margin:0;padding:0}.ur-fy-card li{padding:8px 0;border-top:1px solid rgba(0,0,0,.06)}'
+        . '.ur-fy-card li:first-child{border-top:0}.ur-fy-card small{display:block;opacity:.7}</style>';
+    $html .= '<section id="for-you" class="ur-for-you"><h2>' . esc_html($atts['title']) . '</h2><p class="ur-fy-sub">Contracts, news and meetings for your unit and division.</p><div class="ur-fy-grid">';
+    foreach ($cols as $k => $label) {
+        if (!$items[$k]) continue;
+        $html .= '<div class="ur-fy-card"><h3>' . esc_html($label) . '</h3><ul>';
+        foreach ($items[$k] as $it) {
+            $html .= '<li><a href="' . esc_url($it['url']) . '">' . esc_html($it['title']) . '</a>' . (!empty($it['meta']) ? '<small>' . esc_html($it['meta']) . '</small>' : '') . '</li>';
+        }
+        $html .= '</ul></div>';
+    }
+    return $html . '</div></section>';
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// [ur_my_division] — "All events / My division" toggle for event calendars.
+// "My division" = the member's division category PLUS every event with no division
+// category (statewide events like the Labor Day picnic always stay visible).
+// ─────────────────────────────────────────────────────────────────────────────
+
+const UR_MG_DIVISION_CATS = ['oahu-division', 'hawaii-division', 'kauai-division', 'maui-division', 'private-sector-division'];
+
+function ur_mg_user_divisions($user_id = null) {
+    $user_id = ($user_id === null) ? get_current_user_id() : (int) $user_id;
+    if (!$user_id) return [];
+    $map = ['oahu' => 'oahu-division', 'hawaii' => 'hawaii-division', 'kauai' => 'kauai-division', 'maui' => 'maui-division', 'molokai' => 'maui-division', 'lanai' => 'maui-division'];
+    $out = [];
+    $isl = strtolower(trim((string) get_user_meta($user_id, 'island', true)));
+    if (isset($map[$isl])) $out[] = $map[$isl];
+    $unit = trim((string) get_user_meta($user_id, 'unit_number', true));
+    if (ur_mg_norm_bu(get_user_meta($user_id, 'bargaining_unit', true)) === '0' || (ctype_digit($unit) && (int) $unit >= 501 && (int) $unit <= 554)) {
+        $out[] = 'private-sector-division';
+    }
+    return array_values(array_unique(array_filter($out, function ($slug) { return (bool) get_term_by('slug', $slug, 'tribe_events_cat'); })));
+}
+
+/** Event IDs to hide for "My division": in another division's category and not in the member's own. */
+function ur_mg_division_excluded_ids() {
+    static $cache = [];
+    $mine = ur_mg_user_divisions();
+    $ck   = implode(',', $mine);
+    if (isset($cache[$ck])) return $cache[$ck];
+    if (!$mine) return $cache[$ck] = [];
+    $ids = function ($slugs) {
+        $tids = [];
+        foreach ($slugs as $slug) {
+            $t = get_term_by('slug', $slug, 'tribe_events_cat');
+            if ($t) $tids[] = (int) $t->term_id;
+        }
+        return $tids ? array_map('intval', (array) get_objects_in_term($tids, 'tribe_events_cat')) : [];
+    };
+    $others = array_values(array_diff(UR_MG_DIVISION_CATS, $mine));
+    return $cache[$ck] = array_values(array_diff($ids($others), $ids($mine)));
+}
+
+add_action('pre_get_posts', function (WP_Query $q) {
+    if (($_GET['ur_division'] ?? '') !== 'mine' || (is_admin() && !wp_doing_ajax())) return;
+    if (!in_array('tribe_events', (array) $q->get('post_type'), true)) return;
+    $exclude = ur_mg_division_excluded_ids();
+    if (!$exclude) return;
+    $q->set('post__not_in', array_values(array_unique(array_merge((array) $q->get('post__not_in'), $exclude))));
+}, 1000);
+
+add_shortcode('ur_my_division', function () {
+    if (!is_user_logged_in()) return '';
+    $mine = ur_mg_user_divisions();
+    if (!$mine) return '';
+    $names = array_map(function ($slug) { $t = get_term_by('slug', $slug, 'tribe_events_cat'); return $t ? $t->name : $slug; }, $mine);
+    $on    = ($_GET['ur_division'] ?? '') === 'mine';
+    $base  = remove_query_arg('ur_division');
+    $btn   = function ($label, $url, $active) {
+        return '<a href="' . esc_url($url) . '" style="display:inline-block;padding:8px 16px;border-radius:20px;text-decoration:none;border:2px solid var(--e-global-color-primary,#1f3a68);'
+            . ($active ? 'background:var(--e-global-color-primary,#1f3a68);color:#fff' : 'color:var(--e-global-color-primary,#1f3a68)') . '">' . esc_html($label) . '</a>';
+    };
+    return '<div class="ur-my-division" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 16px">'
+        . '<span>Show:</span>' . $btn('All events', $base, !$on) . $btn('My division (' . implode(' + ', $names) . ')', add_query_arg('ur_division', 'mine', $base), $on)
+        . '<small style="opacity:.7">My division still includes statewide events.</small></div>';
+});
 
 // Elementor Posts / Loop Grid with Query ID "ur_for_me": only content tagged for the member's groups.
 add_action('elementor/query/ur_for_me', function ($q) {
