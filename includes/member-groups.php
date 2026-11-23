@@ -133,6 +133,7 @@ function ur_mg_groups($refresh = false) {
         $tid = (int) $t->term_id;
         $groups[$tid] = [
             'term'      => $t,
+            'match'     => get_term_meta($tid, 'ur_mg_match', true) === 'all' ? 'all' : 'any',
             'bu'        => array_map('ur_mg_norm_bu', ur_mg_lines(get_term_meta($tid, 'ur_mg_bu', true))),
             'units'     => ur_mg_parse_units(get_term_meta($tid, 'ur_mg_units', true)),
             'employers' => array_map('strtolower', ur_mg_lines(get_term_meta($tid, 'ur_mg_employers', true))),
@@ -142,36 +143,55 @@ function ur_mg_groups($refresh = false) {
     return $groups;
 }
 
-/** Does a member profile (array of meta values) match a group's rules? Any rule = match. */
+/**
+ * Does a member profile (array of meta values) match a group's rules?
+ * Match "any" (default): at least one filled-in rule matches (rules add up).
+ * Match "all": every filled-in rule must match (rules narrow the group).
+ * A group with no rules filled in matches nobody.
+ */
 function ur_mg_profile_matches(array $p, array $g) {
-    $bu = ur_mg_norm_bu($p['bargaining_unit'] ?? '');
-    if ($bu !== '' && in_array($bu, $g['bu'], true)) return true;
+    $results = [];
 
-    $unit = trim((string) ($p['unit_number'] ?? ''));
-    if ($unit !== '' && ctype_digit($unit)) {
-        $u = (int) $unit;
-        foreach ($g['units'] as $r) {
-            if ($u >= $r[0] && $u <= $r[1]) return true;
+    if ($g['bu']) {
+        $bu = ur_mg_norm_bu($p['bargaining_unit'] ?? '');
+        $results[] = $bu !== '' && in_array($bu, $g['bu'], true);
+    }
+
+    if ($g['units']) {
+        $hit  = false;
+        $unit = trim((string) ($p['unit_number'] ?? ''));
+        if ($unit !== '' && ctype_digit($unit)) {
+            $u = (int) $unit;
+            foreach ($g['units'] as $r) {
+                if ($u >= $r[0] && $u <= $r[1]) { $hit = true; break; }
+            }
         }
+        $results[] = $hit;
     }
 
     if ($g['employers']) {
+        $hit = false;
         foreach (['employer', 'jurisdiction'] as $k) {
             $v = strtolower(trim((string) ($p[$k] ?? '')));
-            if ($v !== '' && in_array($v, $g['employers'], true)) return true;
+            if ($v !== '' && in_array($v, $g['employers'], true)) { $hit = true; break; }
         }
+        $results[] = $hit;
     }
 
     if ($g['titles']) {
-        $jt = strtolower((string) ($p['job_title'] ?? ''));
+        $hit = false;
+        $jt  = strtolower((string) ($p['job_title'] ?? ''));
         if ($jt !== '') {
             foreach ($g['titles'] as $needle) {
                 $needle = trim($needle);
-                if ($needle !== '' && strpos($jt, $needle) !== false) return true;
+                if ($needle !== '' && strpos($jt, $needle) !== false) { $hit = true; break; }
             }
         }
+        $results[] = $hit;
     }
-    return false;
+
+    if (!$results) return false;
+    return (($g['match'] ?? 'any') === 'all') ? !in_array(false, $results, true) : in_array(true, $results, true);
 }
 
 function ur_mg_status_blocked($status) {
@@ -677,6 +697,17 @@ add_action('admin_footer', function () {
 // Admin: group rule fields on the Member Groups screen
 // ─────────────────────────────────────────────────────────────────────────────
 
+function ur_mg_match_select($current) {
+    return '<select name="ur_mg_match" id="ur_mg_match">'
+        . '<option value="any"' . selected($current, 'any', false) . '>Any rule (members matching any box: bigger group)</option>'
+        . '<option value="all"' . selected($current, 'all', false) . '>All rules (members matching every filled-in box: narrower group)</option>'
+        . '</select>';
+}
+
+function ur_mg_match_help() {
+    return 'Example: Bargaining unit 10 + Job title ADULT CORRECTIONS OFFICER. "Any" = all BU 10 members plus all ACOs. "All" = only BU 10 ACOs. Empty boxes are ignored.';
+}
+
 function ur_mg_rule_help($key) {
     switch ($key) {
         case 'ur_mg_bu':         return 'e.g. 1 or 10 (0 = Private Sector). Comma-separated.';
@@ -689,7 +720,8 @@ function ur_mg_rule_help($key) {
 
 add_action(UR_MG_TAX . '_add_form_fields', function () {
     wp_nonce_field('ur_mg_term', 'ur_mg_term_nonce');
-    echo '<p><strong>Who is in this group?</strong> A member matches if ANY rule below matches.</p>';
+    echo '<p><strong>Who is in this group?</strong> Fill in one or more rules below.</p>';
+    echo '<div class="form-field"><label for="ur_mg_match">Match</label>' . ur_mg_match_select('any') . '<p>' . esc_html(ur_mg_match_help()) . '</p></div>';
     foreach (UR_MG_RULE_KEYS as $k => $label) {
         printf('<div class="form-field"><label for="%1$s">%2$s</label><textarea name="%1$s" id="%1$s" rows="2"></textarea><p>%3$s</p></div>',
             esc_attr($k), esc_html($label), esc_html(ur_mg_rule_help($k)));
@@ -698,6 +730,8 @@ add_action(UR_MG_TAX . '_add_form_fields', function () {
 
 add_action(UR_MG_TAX . '_edit_form_fields', function ($term) {
     wp_nonce_field('ur_mg_term', 'ur_mg_term_nonce');
+    printf('<tr class="form-field"><th scope="row"><label for="ur_mg_match">Match</label></th><td>%s<p class="description">%s</p></td></tr>',
+        ur_mg_match_select(get_term_meta($term->term_id, 'ur_mg_match', true) === 'all' ? 'all' : 'any'), esc_html(ur_mg_match_help()));
     foreach (UR_MG_RULE_KEYS as $k => $label) {
         printf('<tr class="form-field"><th scope="row"><label for="%1$s">%2$s</label></th><td><textarea name="%1$s" id="%1$s" rows="3">%3$s</textarea><p class="description">%4$s</p></td></tr>',
             esc_attr($k), esc_html($label), esc_textarea((string) get_term_meta($term->term_id, $k, true)), esc_html(ur_mg_rule_help($k)));
@@ -711,6 +745,9 @@ function ur_mg_save_term_rules($term_id) {
     if (!current_user_can('manage_options')) return;
     foreach (array_keys(UR_MG_RULE_KEYS) as $k) {
         if (isset($_POST[$k])) update_term_meta($term_id, $k, sanitize_textarea_field(wp_unslash($_POST[$k])));
+    }
+    if (isset($_POST['ur_mg_match'])) {
+        update_term_meta($term_id, 'ur_mg_match', wp_unslash($_POST['ur_mg_match']) === 'all' ? 'all' : 'any');
     }
     delete_transient('ur_mg_member_counts');
 }
@@ -741,10 +778,12 @@ function ur_mg_member_counts() {
 
 add_filter('manage_edit-' . UR_MG_TAX . '_columns', function ($cols) {
     unset($cols['description']);
+    $cols['ur_mg_match']   = 'Match';
     $cols['ur_mg_members'] = 'Members';
     return $cols;
 });
 add_filter('manage_' . UR_MG_TAX . '_custom_column', function ($out, $col, $term_id) {
+    if ($col === 'ur_mg_match') return get_term_meta($term_id, 'ur_mg_match', true) === 'all' ? 'All rules' : 'Any rule';
     return $col === 'ur_mg_members' ? (string) (int) (ur_mg_member_counts()[(int) $term_id] ?? 0) : $out;
 }, 10, 3);
 
