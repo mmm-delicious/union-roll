@@ -1,0 +1,733 @@
+<?php
+/**
+ * UnionRoll — Member Groups.
+ *
+ * Restrict posts, pages, events and media files (incl. WP-Members Download
+ * Protect files) to groups of members defined by rules on their profile data
+ * (bargaining unit, unit number, employer/jurisdiction, job title).
+ *
+ * - Content with no group ticked stays visible to everyone (no change).
+ * - Content with one or more groups is visible to members of ANY ticked group.
+ * - Staff (editors/admins, or verified accounts on a staff email domain) see everything.
+ * - Members whose member_status is on the blocked list belong to no group.
+ *
+ * Nothing is restricted until a group is ticked on some content (fast path).
+ *
+ * @since 3.21.0
+ */
+
+defined('ABSPATH') || exit;
+
+const UR_MG_TAX = 'ur_member_group';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Settings
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ur_mg_settings() {
+    $defaults = [
+        'staff_domains'    => 'upwhawaii.org',
+        'blocked_statuses' => "Non Member\nTerminated\nInactive\nDeceased\nOpt-Out\nOut-Out",
+        'denied_message'   => 'This page is only available to members of a specific bargaining unit or employer group. If you think you should have access, please contact UPW.',
+    ];
+    $saved = get_option('ur_mg_settings', []);
+    return array_merge($defaults, is_array($saved) ? $saved : []);
+}
+
+function ur_mg_lines($text) {
+    $parts = preg_split('/[\r\n,]+/', (string) $text);
+    return array_values(array_filter(array_map('trim', $parts), 'strlen'));
+}
+
+function ur_mg_post_types() {
+    return apply_filters('ur_mg_post_types', ['post', 'page', 'tribe_events', 'attachment']);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Taxonomy
+// ─────────────────────────────────────────────────────────────────────────────
+
+add_action('init', function () {
+    register_taxonomy(UR_MG_TAX, ur_mg_post_types(), [
+        'labels' => [
+            'name'          => 'Member Groups',
+            'singular_name' => 'Member Group',
+            'menu_name'     => 'Member Groups',
+            'all_items'     => 'All Member Groups',
+            'edit_item'     => 'Edit Member Group',
+            'add_new_item'  => 'Add New Member Group',
+            'search_items'  => 'Search Member Groups',
+            'parent_item'   => 'Parent Group',
+        ],
+        'description'           => 'Only members in a ticked group can see this. Leave all unticked to show it to everyone.',
+        'public'                => false,
+        'publicly_queryable'    => false,
+        'show_ui'               => true,
+        'show_in_menu'          => true,
+        'show_in_nav_menus'     => false,
+        'show_in_rest'          => false,
+        'show_tagcloud'         => false,
+        'show_in_quick_edit'    => true,
+        'show_admin_column'     => true,
+        'hierarchical'          => true,
+        'query_var'             => false,
+        'rewrite'               => false,
+        'update_count_callback' => '_update_generic_term_count',
+        'capabilities'          => [
+            'manage_terms' => 'manage_options',
+            'edit_terms'   => 'manage_options',
+            'delete_terms' => 'manage_options',
+            'assign_terms' => 'edit_posts',
+        ],
+    ]);
+}, 0); // priority 0: Download Protect checks downloads on init priority 10
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Group rules
+// ─────────────────────────────────────────────────────────────────────────────
+
+const UR_MG_RULE_KEYS = [
+    'ur_mg_bu'         => 'Bargaining units',
+    'ur_mg_units'      => 'Unit numbers',
+    'ur_mg_employers'  => 'Employers / jurisdictions',
+    'ur_mg_job_titles' => 'Job title contains',
+];
+
+function ur_mg_norm_bu($v) {
+    $v = trim((string) $v);
+    if ($v === '') return '';
+    $n = ltrim($v, '0');
+    return $n === '' ? '0' : strtolower($n);
+}
+
+/** Parse "501-554, 149 249" into [[501,554],[149,149],[249,249]]. */
+function ur_mg_parse_units($spec) {
+    $out = [];
+    foreach (preg_split('/[\s,;]+/', (string) $spec) as $tok) {
+        if ($tok === '') continue;
+        if (preg_match('/^(\d+)\s*-\s*(\d+)$/', $tok, $m)) {
+            $out[] = [min((int) $m[1], (int) $m[2]), max((int) $m[1], (int) $m[2])];
+        } elseif (ctype_digit($tok)) {
+            $out[] = [(int) $tok, (int) $tok];
+        }
+    }
+    return $out;
+}
+
+/**
+ * All groups with their parsed rules. Cached per request.
+ * Reads the term tables directly so it works even before the taxonomy is registered.
+ */
+function ur_mg_groups($refresh = false) {
+    static $groups = null;
+    if ($groups !== null && !$refresh) return $groups;
+    global $wpdb;
+    $groups = [];
+    $rows = $wpdb->get_results($wpdb->prepare(
+        "SELECT t.term_id, t.name, t.slug FROM {$wpdb->terms} t
+         INNER JOIN {$wpdb->term_taxonomy} tt ON tt.term_id = t.term_id
+         WHERE tt.taxonomy = %s ORDER BY t.name",
+        UR_MG_TAX
+    ));
+    foreach ((array) $rows as $t) {
+        $tid = (int) $t->term_id;
+        $groups[$tid] = [
+            'term'      => $t,
+            'bu'        => array_map('ur_mg_norm_bu', ur_mg_lines(get_term_meta($tid, 'ur_mg_bu', true))),
+            'units'     => ur_mg_parse_units(get_term_meta($tid, 'ur_mg_units', true)),
+            'employers' => array_map('strtolower', ur_mg_lines(get_term_meta($tid, 'ur_mg_employers', true))),
+            'titles'    => array_map('strtolower', preg_split('/[\r\n]+/', trim((string) get_term_meta($tid, 'ur_mg_job_titles', true)), -1, PREG_SPLIT_NO_EMPTY)),
+        ];
+    }
+    return $groups;
+}
+
+/** Does a member profile (array of meta values) match a group's rules? Any rule = match. */
+function ur_mg_profile_matches(array $p, array $g) {
+    $bu = ur_mg_norm_bu($p['bargaining_unit'] ?? '');
+    if ($bu !== '' && in_array($bu, $g['bu'], true)) return true;
+
+    $unit = trim((string) ($p['unit_number'] ?? ''));
+    if ($unit !== '' && ctype_digit($unit)) {
+        $u = (int) $unit;
+        foreach ($g['units'] as $r) {
+            if ($u >= $r[0] && $u <= $r[1]) return true;
+        }
+    }
+
+    if ($g['employers']) {
+        foreach (['employer', 'jurisdiction'] as $k) {
+            $v = strtolower(trim((string) ($p[$k] ?? '')));
+            if ($v !== '' && in_array($v, $g['employers'], true)) return true;
+        }
+    }
+
+    if ($g['titles']) {
+        $jt = strtolower((string) ($p['job_title'] ?? ''));
+        if ($jt !== '') {
+            foreach ($g['titles'] as $needle) {
+                $needle = trim($needle);
+                if ($needle !== '' && strpos($jt, $needle) !== false) return true;
+            }
+        }
+    }
+    return false;
+}
+
+function ur_mg_status_blocked($status) {
+    $status = strtolower(trim((string) $status));
+    if ($status === '') return false;
+    $blocked = array_map('strtolower', ur_mg_lines(ur_mg_settings()['blocked_statuses']));
+    return in_array($status, $blocked, true);
+}
+
+/** Is this user on a staff email domain AND verified by an admin for that exact address? */
+function ur_mg_is_verified_staff_email($user) {
+    if (!$user || empty($user->user_email)) return false;
+    $email   = strtolower(trim($user->user_email));
+    $domains = array_map('strtolower', ur_mg_lines(ur_mg_settings()['staff_domains']));
+    $at      = strrpos($email, '@');
+    if ($at === false || !in_array(substr($email, $at + 1), $domains, true)) return false;
+    $verified = strtolower(trim((string) get_user_meta($user->ID, 'ur_mg_staff_verified_email', true)));
+    return $verified !== '' && hash_equals($verified, $email);
+}
+
+/**
+ * Who is this user, for access purposes? Cached per user ID per request
+ * (so switching users mid-request gives the right answer).
+ *
+ * @return array{staff:bool,groups:int[],blocked:bool}
+ */
+function ur_mg_user_context($user_id = null) {
+    static $cache = [];
+    $user_id = ($user_id === null) ? get_current_user_id() : (int) $user_id;
+    if (isset($cache[$user_id])) return $cache[$user_id];
+
+    $ctx = ['staff' => false, 'groups' => [], 'blocked' => false];
+    if ($user_id <= 0) return $cache[$user_id] = $ctx;
+
+    $user = get_userdata($user_id);
+    if (!$user) return $cache[$user_id] = $ctx;
+
+    if (user_can($user, 'edit_others_posts') || ur_mg_is_verified_staff_email($user)) {
+        $ctx['staff'] = true;
+        return $cache[$user_id] = apply_filters('ur_mg_user_context', $ctx, $user_id);
+    }
+
+    $profile = [];
+    foreach (['bargaining_unit', 'unit_number', 'employer', 'jurisdiction', 'job_title', 'member_status'] as $k) {
+        $profile[$k] = get_user_meta($user_id, $k, true);
+    }
+    if (ur_mg_status_blocked($profile['member_status'])) {
+        $ctx['blocked'] = true;
+        return $cache[$user_id] = apply_filters('ur_mg_user_context', $ctx, $user_id);
+    }
+    foreach (ur_mg_groups() as $tid => $g) {
+        if (ur_mg_profile_matches($profile, $g)) $ctx['groups'][] = $tid;
+    }
+    return $cache[$user_id] = apply_filters('ur_mg_user_context', $ctx, $user_id);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Access checks
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** True once any content has at least one group ticked. One cheap query per request. */
+function ur_mg_has_restrictions() {
+    static $has = null;
+    if ($has !== null) return $has;
+    global $wpdb;
+    $has = (bool) $wpdb->get_var($wpdb->prepare(
+        "SELECT 1 FROM {$wpdb->term_relationships} tr
+         INNER JOIN {$wpdb->term_taxonomy} tt ON tt.term_taxonomy_id = tr.term_taxonomy_id
+         WHERE tt.taxonomy = %s LIMIT 1",
+        UR_MG_TAX
+    ));
+    return $has;
+}
+
+function ur_mg_post_groups($post_id) {
+    if (taxonomy_exists(UR_MG_TAX)) {
+        $terms = get_the_terms((int) $post_id, UR_MG_TAX);
+        if (is_array($terms)) return array_map(function ($t) { return (int) $t->term_id; }, $terms);
+        if ($terms === false) return [];
+    }
+    // Taxonomy not registered yet, or an error: read the tables directly (never fail open).
+    global $wpdb;
+    return array_map('intval', (array) $wpdb->get_col($wpdb->prepare(
+        "SELECT tt.term_id FROM {$wpdb->term_relationships} tr
+         INNER JOIN {$wpdb->term_taxonomy} tt ON tt.term_taxonomy_id = tr.term_taxonomy_id
+         WHERE tt.taxonomy = %s AND tr.object_id = %d",
+        UR_MG_TAX, (int) $post_id
+    )));
+}
+
+function ur_mg_user_can_view($post_id, $user_id = null) {
+    if (!$post_id || !ur_mg_has_restrictions()) return true;
+    $groups = ur_mg_post_groups($post_id);
+    if (!$groups) return true;
+    $ctx = ur_mg_user_context($user_id);
+    if ($ctx['staff']) return true;
+    return (bool) array_intersect($groups, $ctx['groups']);
+}
+
+/** IDs of all content this user may NOT see (restricted to groups they're not in). */
+function ur_mg_denied_ids($user_id = null) {
+    static $cache = [];
+    $user_id = ($user_id === null) ? get_current_user_id() : (int) $user_id;
+    if (isset($cache[$user_id])) return $cache[$user_id];
+    if (!ur_mg_has_restrictions() || ur_mg_user_context($user_id)['staff']) return $cache[$user_id] = [];
+
+    $all = array_keys(ur_mg_groups());
+    if (!$all) return $cache[$user_id] = [];
+    $restricted = ur_mg_objects_in_groups($all);
+    $mine       = ur_mg_user_context($user_id)['groups'];
+    $allowed    = $mine ? ur_mg_objects_in_groups($mine) : [];
+    return $cache[$user_id] = array_values(array_diff($restricted, $allowed));
+}
+
+/** Object IDs tagged with any of these group term IDs. */
+function ur_mg_objects_in_groups(array $term_ids) {
+    $term_ids = array_filter(array_map('intval', $term_ids));
+    if (!$term_ids) return [];
+    global $wpdb;
+    $in = implode(',', $term_ids);
+    return array_map('intval', (array) $wpdb->get_col($wpdb->prepare(
+        "SELECT DISTINCT tr.object_id FROM {$wpdb->term_relationships} tr
+         INNER JOIN {$wpdb->term_taxonomy} tt ON tt.term_taxonomy_id = tr.term_taxonomy_id
+         WHERE tt.taxonomy = %s AND tt.term_id IN ($in)",
+        UR_MG_TAX
+    )));
+}
+
+/** Every object with at least one group (used for sitemaps). */
+function ur_mg_all_restricted_ids() {
+    return ur_mg_objects_in_groups(array_keys(ur_mg_groups()));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Enforcement: queries (lists, archives, search, feeds, REST collections, Elementor loops)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ur_mg_query_targets_our_types(WP_Query $q) {
+    $pt = $q->get('post_type');
+    if (empty($pt)) {
+        // Default post type for most queries is 'post'; attachment queries set it explicitly.
+        return true;
+    }
+    if ($pt === 'any') return true;
+    $ours = ur_mg_post_types();
+    return (bool) array_intersect((array) $pt, $ours);
+}
+
+add_action('pre_get_posts', function (WP_Query $q) {
+    if ($q->get('ur_mg_skip')) return;
+    if (!ur_mg_has_restrictions()) return;
+    $ctx = ur_mg_user_context();
+    if ($ctx['staff']) return;
+    // Single post/page views are handled in template_redirect with a clear message instead of a 404.
+    if ($q->is_main_query() && $q->is_singular()) return;
+    if (!ur_mg_query_targets_our_types($q)) return;
+
+    $clause = [
+        'relation' => 'OR',
+        ['taxonomy' => UR_MG_TAX, 'operator' => 'NOT EXISTS'],
+    ];
+    if ($ctx['groups']) {
+        $clause[] = [
+            'taxonomy'         => UR_MG_TAX,
+            'field'            => 'term_id',
+            'terms'            => $ctx['groups'],
+            'operator'         => 'IN',
+            'include_children' => false,
+        ];
+    }
+    $existing = $q->get('tax_query');
+    $q->set('tax_query', $existing ? ['relation' => 'AND', $existing, $clause] : [$clause]);
+}, 999);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Enforcement: single views
+// ─────────────────────────────────────────────────────────────────────────────
+
+add_action('template_redirect', function () {
+    if (!is_singular() || !ur_mg_has_restrictions()) return;
+    $post = get_queried_object();
+    if (!$post || empty($post->ID) || ur_mg_user_can_view($post->ID)) return;
+
+    if (!is_user_logged_in()) {
+        $back  = get_permalink($post);
+        $login = function_exists('wpmem_login_url') && wpmem_login_url() ? wpmem_login_url() : wp_login_url();
+        wp_safe_redirect(add_query_arg('redirect_to', rawurlencode($back), $login));
+        exit;
+    }
+    nocache_headers();
+    wp_die(
+        '<p>' . esc_html(ur_mg_settings()['denied_message']) . '</p>',
+        esc_html__('Members of this group only', 'union-roll'),
+        ['response' => 403, 'link_url' => home_url('/'), 'link_text' => 'Back to home']
+    );
+}, 5);
+
+// REST single items (collections are covered by pre_get_posts).
+add_filter('rest_request_before_callbacks', function ($response, $handler, $request) {
+    if (is_wp_error($response) || !ur_mg_has_restrictions()) return $response;
+    $id = (int) $request->get_param('id');
+    if (!$id) return $response;
+    $cb = $handler['callback'] ?? null;
+    if (!is_array($cb) || !($cb[0] instanceof WP_REST_Posts_Controller)) return $response;
+    $pt = get_post_type($id);
+    if ($pt && in_array($pt, ur_mg_post_types(), true) && !ur_mg_user_can_view($id)) {
+        return new WP_Error('rest_forbidden', 'Not available.', ['status' => is_user_logged_in() ? 403 : 401]);
+    }
+    return $response;
+}, 10, 3);
+
+// Previous / next post links.
+foreach (['get_previous_post_where', 'get_next_post_where'] as $ur_mg_hook) {
+    add_filter($ur_mg_hook, function ($where) {
+        $deny = ur_mg_denied_ids();
+        if ($deny) $where .= ' AND p.ID NOT IN (' . implode(',', array_map('intval', $deny)) . ')';
+        return $where;
+    });
+}
+
+// Menus: drop items that point at content this user can't see.
+add_filter('wp_get_nav_menu_objects', function ($items) {
+    if (is_admin() || !ur_mg_has_restrictions() || ur_mg_user_context()['staff']) return $items;
+    $deny = array_flip(ur_mg_denied_ids());
+    if (!$deny) return $items;
+    return array_values(array_filter($items, function ($i) use ($deny) {
+        return !($i->type === 'post_type' && isset($deny[(int) $i->object_id]));
+    }));
+});
+
+// Sitemaps: never list group-only content.
+add_filter('wpseo_exclude_from_sitemap_by_post_ids', function ($ids) {
+    return ur_mg_has_restrictions() ? array_values(array_unique(array_merge((array) $ids, ur_mg_all_restricted_ids()))) : $ids;
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Enforcement: WP-Members Download Protect (contract PDFs etc.)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ur_mg_dp_post_id_from_key($key) {
+    if (!$key || !function_exists('wpmem_dp_get_file_post')) return 0;
+    $p = wpmem_dp_get_file_post($key);
+    return ($p && !empty($p->ID)) ? (int) $p->ID : 0;
+}
+
+// The actual download request. Runs after WP-Members' own login check.
+add_action('wpmem_dp_verify', function ($args) {
+    $pid = (int) ($args['file_info']['post_id'] ?? 0);
+    if (!$pid || !is_user_logged_in() || ur_mg_user_can_view($pid)) return;
+    nocache_headers();
+    wp_die(
+        '<p>' . esc_html(ur_mg_settings()['denied_message']) . '</p>',
+        esc_html__('Members of this group only', 'union-roll'),
+        ['response' => 403, 'link_url' => home_url('/'), 'link_text' => 'Back to home']
+    );
+}, 20);
+
+// Video/audio players and anything else that asks.
+add_filter('wpmem_dp_user_can_access', function ($access, $key, $user_id) {
+    if (!$access) return $access;
+    $pid = ur_mg_dp_post_id_from_key($key);
+    return $pid ? ur_mg_user_can_view($pid, $user_id) : $access;
+}, 20, 3);
+
+// Hide [wpmem_file] links the member can't open.
+add_filter('wpmem_dp_link', function ($content, $settings) {
+    $id  = (string) ($settings['id'] ?? '');
+    $key = strpos($id, 'dp_') === 0 ? substr($id, 3) : '';
+    $pid = ur_mg_dp_post_id_from_key($key);
+    return ($pid && !ur_mg_user_can_view($pid)) ? '' : $content;
+}, 20, 2);
+
+// Hide rows in [wpmem_file_list] / table output.
+add_filter('wpmem_dp_file_list_row', function ($row) {
+    $id  = (string) ($row['id'] ?? '');
+    $key = strpos($id, 'dp_') === 0 ? substr($id, 3) : '';
+    $pid = ur_mg_dp_post_id_from_key($key);
+    if ($pid && !ur_mg_user_can_view($pid)) {
+        foreach (['wrapper_before', 'wrapper_after', 'link_before', 'link_after', 'title', 'file_name', 'date', 'file_type'] as $k) {
+            $row[$k] = '';
+        }
+    }
+    return $row;
+}, 20);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Page-section restriction: shortcode + Elementor CSS class
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Is the current user in any of these group slugs (or staff)? */
+function ur_mg_user_in_slugs(array $slugs, $user_id = null) {
+    $ctx = ur_mg_user_context($user_id);
+    if ($ctx['staff']) return true;
+    if (!$ctx['groups']) return false;
+    foreach (ur_mg_groups() as $tid => $g) {
+        if (in_array($g['term']->slug, $slugs, true) && in_array($tid, $ctx['groups'], true)) return true;
+    }
+    return false;
+}
+
+// [ur_group_only groups="bu-1,dsi-renal"]Only these members see this.[/ur_group_only]
+add_shortcode('ur_group_only', function ($atts, $content = '') {
+    $atts  = shortcode_atts(['groups' => ''], $atts, 'ur_group_only');
+    $slugs = array_map('sanitize_title', ur_mg_lines($atts['groups']));
+    if (!$slugs || !ur_mg_user_in_slugs($slugs)) return '';
+    return do_shortcode($content);
+});
+
+// Elementor: add CSS class "ur-group-<slug>" to any section/container/column/widget
+// to show it only to that group (several classes = any of them).
+function ur_mg_elementor_should_render($should_render, $element) {
+    if (!$should_render || !is_object($element) || !method_exists($element, 'get_settings')) return $should_render;
+    if (\Elementor\Plugin::$instance->editor->is_edit_mode() || \Elementor\Plugin::$instance->preview->is_preview_mode()) return $should_render;
+    $classes = trim((string) $element->get_settings('_css_classes') . ' ' . (string) $element->get_settings('css_classes'));
+    if ($classes === '' || strpos($classes, 'ur-group-') === false) return $should_render;
+    preg_match_all('/(?:^|\s)ur-group-([a-z0-9-]+)/', $classes, $m);
+    return $m[1] ? ur_mg_user_in_slugs($m[1]) : $should_render;
+}
+add_action('elementor/init', function () {
+    foreach (['widget', 'section', 'column', 'container'] as $type) {
+        add_filter("elementor/frontend/{$type}/should_render", 'ur_mg_elementor_should_render', 10, 2);
+    }
+});
+
+// Elementor Posts / Loop Grid with Query ID "ur_for_me": only content tagged for the member's groups.
+add_action('elementor/query/ur_for_me', function ($q) {
+    $ctx = ur_mg_user_context();
+    if ($ctx['staff']) {
+        $q->set('tax_query', [['taxonomy' => UR_MG_TAX, 'operator' => 'EXISTS']]);
+        return;
+    }
+    if (!$ctx['groups']) {
+        $q->set('post__in', [0]);
+        return;
+    }
+    $q->set('tax_query', [[
+        'taxonomy'         => UR_MG_TAX,
+        'field'            => 'term_id',
+        'terms'            => $ctx['groups'],
+        'include_children' => false,
+    ]]);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin: media modal checkboxes (edit screen uses the normal meta box)
+// ─────────────────────────────────────────────────────────────────────────────
+
+add_filter('attachment_fields_to_edit', function ($fields, $post) {
+    global $pagenow;
+    if ($pagenow === 'post.php' || !current_user_can('edit_post', $post->ID)) return $fields;
+    $terms = get_terms(['taxonomy' => UR_MG_TAX, 'hide_empty' => false]);
+    if (is_wp_error($terms) || !$terms) return $fields;
+    $have = ur_mg_post_groups($post->ID);
+    $name = 'attachments[' . (int) $post->ID . '][ur_mg_terms][]';
+    $html = '<input type="hidden" name="attachments[' . (int) $post->ID . '][ur_mg_present]" value="1">';
+    foreach ($terms as $t) {
+        $html .= '<label style="display:block"><input type="checkbox" name="' . esc_attr($name) . '" value="' . (int) $t->term_id . '"'
+            . checked(in_array((int) $t->term_id, $have, true), true, false) . '> ' . esc_html($t->name) . '</label>';
+    }
+    unset($fields[UR_MG_TAX]);
+    $fields['ur_mg_terms'] = [
+        'label' => 'Member Groups',
+        'input' => 'html',
+        'html'  => $html,
+        'helps' => 'Only these groups can open this file. Leave all unticked for everyone.',
+    ];
+    return $fields;
+}, 10, 2);
+
+add_filter('attachment_fields_to_save', function ($post, $attachment) {
+    if (empty($attachment['ur_mg_present']) || !current_user_can('edit_post', $post['ID'])) return $post;
+    $ids = array_map('intval', (array) ($attachment['ur_mg_terms'] ?? []));
+    wp_set_object_terms((int) $post['ID'], $ids, UR_MG_TAX, false);
+    return $post;
+}, 10, 2);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin: group rule fields on the Member Groups screen
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ur_mg_rule_help($key) {
+    switch ($key) {
+        case 'ur_mg_bu':         return 'e.g. 1 or 10 (0 = Private Sector). Comma-separated.';
+        case 'ur_mg_units':      return 'e.g. 535 or 550-554, 149, 249. Ranges allowed.';
+        case 'ur_mg_employers':  return 'One per line, exact name as on the member profile (Employer or Jurisdiction), e.g. US Renal Care.';
+        case 'ur_mg_job_titles': return 'One per line; matches if the job title contains the text, e.g. ADULT CORRECTIONS OFFICER.';
+    }
+    return '';
+}
+
+add_action(UR_MG_TAX . '_add_form_fields', function () {
+    wp_nonce_field('ur_mg_term', 'ur_mg_term_nonce');
+    echo '<p><strong>Who is in this group?</strong> A member matches if ANY rule below matches.</p>';
+    foreach (UR_MG_RULE_KEYS as $k => $label) {
+        printf('<div class="form-field"><label for="%1$s">%2$s</label><textarea name="%1$s" id="%1$s" rows="2"></textarea><p>%3$s</p></div>',
+            esc_attr($k), esc_html($label), esc_html(ur_mg_rule_help($k)));
+    }
+});
+
+add_action(UR_MG_TAX . '_edit_form_fields', function ($term) {
+    wp_nonce_field('ur_mg_term', 'ur_mg_term_nonce');
+    foreach (UR_MG_RULE_KEYS as $k => $label) {
+        printf('<tr class="form-field"><th scope="row"><label for="%1$s">%2$s</label></th><td><textarea name="%1$s" id="%1$s" rows="3">%3$s</textarea><p class="description">%4$s</p></td></tr>',
+            esc_attr($k), esc_html($label), esc_textarea((string) get_term_meta($term->term_id, $k, true)), esc_html(ur_mg_rule_help($k)));
+    }
+    $n = ur_mg_member_counts()[(int) $term->term_id] ?? 0;
+    printf('<tr class="form-field"><th scope="row">Members matched</th><td>%d registered members match these rules today.</td></tr>', (int) $n);
+});
+
+function ur_mg_save_term_rules($term_id) {
+    if (!isset($_POST['ur_mg_term_nonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['ur_mg_term_nonce'])), 'ur_mg_term')) return;
+    if (!current_user_can('manage_options')) return;
+    foreach (array_keys(UR_MG_RULE_KEYS) as $k) {
+        if (isset($_POST[$k])) update_term_meta($term_id, $k, sanitize_textarea_field(wp_unslash($_POST[$k])));
+    }
+    delete_transient('ur_mg_member_counts');
+}
+add_action('created_' . UR_MG_TAX, 'ur_mg_save_term_rules');
+add_action('edited_' . UR_MG_TAX, 'ur_mg_save_term_rules');
+
+/** term_id => number of registered (non-staff, non-blocked) members matching. Cached 10 min. */
+function ur_mg_member_counts() {
+    $cached = get_transient('ur_mg_member_counts');
+    if (is_array($cached)) return $cached;
+    global $wpdb;
+    $keys = ['bargaining_unit', 'unit_number', 'employer', 'jurisdiction', 'job_title', 'member_status'];
+    $in   = implode(',', array_fill(0, count($keys), '%s'));
+    $rows = $wpdb->get_results($wpdb->prepare("SELECT user_id, meta_key, meta_value FROM {$wpdb->usermeta} WHERE meta_key IN ($in)", $keys), ARRAY_A);
+    $profiles = [];
+    foreach ($rows as $r) $profiles[(int) $r['user_id']][$r['meta_key']] = $r['meta_value'];
+    $groups = ur_mg_groups(true);
+    $counts = array_fill_keys(array_keys($groups), 0);
+    foreach ($profiles as $p) {
+        if (ur_mg_status_blocked($p['member_status'] ?? '')) continue;
+        foreach ($groups as $tid => $g) {
+            if (ur_mg_profile_matches($p, $g)) $counts[$tid]++;
+        }
+    }
+    set_transient('ur_mg_member_counts', $counts, 10 * MINUTE_IN_SECONDS);
+    return $counts;
+}
+
+add_filter('manage_edit-' . UR_MG_TAX . '_columns', function ($cols) {
+    unset($cols['description']);
+    $cols['ur_mg_members'] = 'Members';
+    return $cols;
+});
+add_filter('manage_' . UR_MG_TAX . '_custom_column', function ($out, $col, $term_id) {
+    return $col === 'ur_mg_members' ? (string) (int) (ur_mg_member_counts()[(int) $term_id] ?? 0) : $out;
+}, 10, 3);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin: staff verification on the user profile
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ur_mg_staff_profile_field($user) {
+    if (!current_user_can('manage_options')) return;
+    $on = ur_mg_is_verified_staff_email($user);
+    echo '<h2>UnionRoll Member Groups</h2><table class="form-table"><tr><th>Staff access</th><td>';
+    wp_nonce_field('ur_mg_staff', 'ur_mg_staff_nonce');
+    printf('<label><input type="checkbox" name="ur_mg_staff_verified" value="1" %s> Verified staff: sees all member-group content</label>', checked($on, true, false));
+    echo '<p class="description">Only works for addresses on a staff domain (Settings: ' . esc_html(ur_mg_settings()['staff_domains']) . '). If the email address changes, staff access stops until re-verified.</p></td></tr></table>';
+}
+add_action('edit_user_profile', 'ur_mg_staff_profile_field');
+add_action('show_user_profile', 'ur_mg_staff_profile_field');
+
+function ur_mg_staff_profile_save($user_id) {
+    if (!current_user_can('manage_options') || !isset($_POST['ur_mg_staff_nonce'])) return;
+    if (!wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['ur_mg_staff_nonce'])), 'ur_mg_staff')) return;
+    $user = get_userdata($user_id);
+    if (!empty($_POST['ur_mg_staff_verified']) && $user) {
+        update_user_meta($user_id, 'ur_mg_staff_verified_email', strtolower(trim($user->user_email)));
+    } else {
+        delete_user_meta($user_id, 'ur_mg_staff_verified_email');
+    }
+}
+// profile_update fires after the user's email is saved, so a changed address is the one verified.
+add_action('profile_update', function ($user_id) {
+    if (is_admin() && isset($_POST['ur_mg_staff_nonce'])) ur_mg_staff_profile_save($user_id);
+}, 20);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin: settings + member lookup page
+// ─────────────────────────────────────────────────────────────────────────────
+
+add_action('admin_menu', function () {
+    add_submenu_page('union_roll', 'Member Groups', 'Member Groups', 'manage_options',
+        'edit-tags.php?taxonomy=' . UR_MG_TAX);
+    add_submenu_page('union_roll', 'Member Groups Settings', 'Member Groups Settings', 'manage_options',
+        'union_roll_member_groups', 'ur_mg_render_settings_page');
+}, 20);
+
+function ur_mg_render_settings_page() {
+    if (!current_user_can('manage_options')) return;
+    $notice = '';
+
+    if (isset($_POST['ur_mg_save']) && check_admin_referer('ur_mg_settings')) {
+        update_option('ur_mg_settings', [
+            'staff_domains'    => sanitize_textarea_field(wp_unslash($_POST['staff_domains'] ?? '')),
+            'blocked_statuses' => sanitize_textarea_field(wp_unslash($_POST['blocked_statuses'] ?? '')),
+            'denied_message'   => sanitize_textarea_field(wp_unslash($_POST['denied_message'] ?? '')),
+        ], false);
+        delete_transient('ur_mg_member_counts');
+        $notice = 'Settings saved.';
+    }
+
+    if (isset($_POST['ur_mg_verify_all']) && check_admin_referer('ur_mg_settings')) {
+        $n = 0;
+        foreach (ur_mg_lines(ur_mg_settings()['staff_domains']) as $d) {
+            $users = get_users(['search' => '*@' . $d, 'search_columns' => ['user_email'], 'fields' => ['ID', 'user_email']]);
+            foreach ($users as $u) {
+                update_user_meta($u->ID, 'ur_mg_staff_verified_email', strtolower(trim($u->user_email)));
+                $n++;
+            }
+        }
+        $notice = sprintf('%d staff-domain accounts verified.', $n);
+    }
+
+    $s = ur_mg_settings();
+    echo '<div class="wrap"><h1>Member Groups Settings</h1>';
+    if ($notice) echo '<div class="notice notice-success"><p>' . esc_html($notice) . '</p></div>';
+    echo '<p>Create groups and their rules under <a href="' . esc_url(admin_url('edit-tags.php?taxonomy=' . UR_MG_TAX)) . '">Member Groups</a>. '
+        . 'Tick groups on any post, page, event or media file. Content with no group ticked stays visible to everyone. '
+        . 'To restrict part of a page, add the CSS class <code>ur-group-&lt;group-slug&gt;</code> to an Elementor section or widget, '
+        . 'or wrap text in <code>[ur_group_only groups="group-slug"]…[/ur_group_only]</code>. '
+        . 'An Elementor Posts / Loop Grid with Query ID <code>ur_for_me</code> shows only content tagged for the viewer\'s groups.</p>';
+    echo '<form method="post">';
+    wp_nonce_field('ur_mg_settings');
+    echo '<table class="form-table">';
+    printf('<tr><th>Staff email domains</th><td><textarea name="staff_domains" rows="2" cols="50">%s</textarea><p class="description">Editors and administrators always see everything. Accounts on these domains see everything only once verified (below, or on the user\'s profile).</p></td></tr>', esc_textarea($s['staff_domains']));
+    printf('<tr><th>Member statuses with no group access</th><td><textarea name="blocked_statuses" rows="6" cols="50">%s</textarea><p class="description">One per line, matched against the member\'s Member Status. These members only see content with no group ticked.</p></td></tr>', esc_textarea($s['blocked_statuses']));
+    printf('<tr><th>Message when access is denied</th><td><textarea name="denied_message" rows="3" cols="80">%s</textarea></td></tr>', esc_textarea($s['denied_message']));
+    echo '</table><p><button class="button button-primary" name="ur_mg_save" value="1">Save settings</button> ';
+    echo '<button class="button" name="ur_mg_verify_all" value="1" onclick="return confirm(\'Verify every account currently on the staff domains?\')">Verify all current staff-domain accounts</button></p></form>';
+
+    // Member lookup.
+    $q = isset($_GET['ur_mg_lookup']) ? sanitize_text_field(wp_unslash($_GET['ur_mg_lookup'])) : '';
+    echo '<h2>Check a member</h2><form method="get"><input type="hidden" name="page" value="union_roll_member_groups">';
+    printf('<input type="text" name="ur_mg_lookup" value="%s" placeholder="Email, username or user ID" size="40"> <button class="button">Check</button></form>', esc_attr($q));
+    if ($q !== '') {
+        $u = ctype_digit($q) ? get_userdata((int) $q) : (get_user_by('email', $q) ?: get_user_by('login', $q));
+        if (!$u) {
+            echo '<p>No user found.</p>';
+        } else {
+            $ctx = ur_mg_user_context($u->ID);
+            $names = [];
+            foreach (ur_mg_groups() as $tid => $g) if (in_array($tid, $ctx['groups'], true)) $names[] = $g['term']->name;
+            echo '<table class="widefat striped" style="max-width:700px"><tbody>';
+            printf('<tr><th>User</th><td>%s (#%d)</td></tr>', esc_html($u->display_name), (int) $u->ID);
+            foreach (['bargaining_unit' => 'Bargaining unit', 'unit_number' => 'Unit', 'employer' => 'Employer', 'jurisdiction' => 'Jurisdiction', 'job_title' => 'Job title', 'member_status' => 'Member status'] as $k => $label) {
+                printf('<tr><th>%s</th><td>%s</td></tr>', esc_html($label), esc_html((string) get_user_meta($u->ID, $k, true)));
+            }
+            $access = $ctx['staff'] ? 'Staff: sees everything' : ($ctx['blocked'] ? 'Blocked by member status: sees only unrestricted content' : ($names ? esc_html(implode(', ', $names)) : 'No groups: sees only unrestricted content'));
+            printf('<tr><th>Access</th><td><strong>%s</strong></td></tr>', $access);
+            echo '</tbody></table>';
+        }
+    }
+    echo '</div>';
+}
