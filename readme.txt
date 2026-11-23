@@ -4,7 +4,7 @@ Tags: event, check-in, qr code, barcode, guest list
 Requires at least: 5.0
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 3.21.0
+Stable tag: 3.21.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -15,6 +15,9 @@ Generate QR codes for event check-in and manage events with a live dashboard, gu
 UnionRoll lets you create events, import guest lists from CSV, and check guests in via QR code, barcode, or phone number lookup. Includes a live admin dashboard with charts and sortable tables.
 
 == Changelog ==
+
+= 3.21.1 =
+* Fix: Elementor element caching could serve one visitor's view of group-only sections (ur-group-<slug> class, [ur_group_only], [wpmem_file]) to everyone; those elements are now rendered per request.
 
 = 3.21.0 =
 * New: Member Groups. Tick groups (e.g. BU 1, BU 10, DSI Renal, Retirees) on posts, pages, events and media files, including WP-Members Download Protect files, so only members in those groups can see or download them. Content with no group stays visible to everyone.

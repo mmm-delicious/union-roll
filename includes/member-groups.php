@@ -496,6 +496,17 @@ add_action('elementor/init', function () {
     }
 });
 
+// Elementor element caching stores a page's static HTML once and serves it to every visitor.
+// Anything whose output depends on the viewer's group must be rendered per request instead.
+add_filter('elementor/element/is_dynamic_content', function ($is_dynamic, $raw_data) {
+    if ($is_dynamic) return $is_dynamic;
+    $s = (array) ($raw_data['settings'] ?? []);
+    $classes = (string) ($s['_css_classes'] ?? '') . ' ' . (string) ($s['css_classes'] ?? '');
+    if (strpos($classes, 'ur-group-') !== false) return true;
+    $json = (string) wp_json_encode($s);
+    return strpos($json, 'ur_group_only') !== false || strpos($json, 'wpmem_file') !== false;
+}, 10, 2);
+
 // Elementor Posts / Loop Grid with Query ID "ur_for_me": only content tagged for the member's groups.
 add_action('elementor/query/ur_for_me', function ($q) {
     $ctx = ur_mg_user_context();
