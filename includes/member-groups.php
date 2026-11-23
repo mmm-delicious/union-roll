@@ -233,6 +233,12 @@ function ur_mg_user_context($user_id = null) {
     $ctx = ['staff' => false, 'groups' => [], 'blocked' => false];
     if ($user_id <= 0) return $cache[$user_id] = $ctx;
 
+    // Admin "view as" preview (front end only): the admin is treated as the chosen member or group.
+    if ($user_id === get_current_user_id() && ($va = ur_mg_view_as())) {
+        if ($va['mode'] === 'user' && $va['id'] !== $user_id) return $cache[$user_id] = ur_mg_user_context($va['id']);
+        if ($va['mode'] === 'group') return $cache[$user_id] = ['staff' => false, 'groups' => [$va['id']], 'blocked' => false];
+    }
+
     $user = get_userdata($user_id);
     if (!$user) return $cache[$user_id] = $ctx;
 
@@ -631,7 +637,7 @@ add_filter('elementor/frontend/widget/should_render', function ($should, $widget
 // ─────────────────────────────────────────────────────────────────────────────
 // [ur_for_you] — contracts, news and upcoming events tagged for the member's groups.
 // Shows nothing to logged-out visitors, staff, or members with nothing tagged for them.
-// Admins can preview as a member with ?ur_preview_user=<user ID>.
+// Admins see it as a member while "View as" preview is on.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function ur_mg_for_you_items($user_id, $limit = 5) {
@@ -666,7 +672,6 @@ add_shortcode('ur_for_you', function ($atts) {
     $atts = shortcode_atts(['limit' => 5, 'title' => 'For You'], $atts, 'ur_for_you');
     if (!is_user_logged_in()) return '';
     $uid = get_current_user_id();
-    if (current_user_can('manage_options') && !empty($_GET['ur_preview_user'])) $uid = (int) $_GET['ur_preview_user'];
     $items = ur_mg_for_you_items($uid, max(1, (int) $atts['limit']));
     if (!$items || !array_filter($items)) return '';
     $cols = ['contracts' => 'Your contracts', 'news' => 'News for your unit', 'events' => 'Your upcoming meetings'];
@@ -696,7 +701,7 @@ add_shortcode('ur_for_you', function ($atts) {
 const UR_MG_DIVISION_CATS = ['oahu-division', 'hawaii-division', 'kauai-division', 'maui-division', 'private-sector-division'];
 
 function ur_mg_user_divisions($user_id = null) {
-    $user_id = ($user_id === null) ? get_current_user_id() : (int) $user_id;
+    $user_id = ($user_id === null) ? ur_mg_effective_user_id() : (int) $user_id;
     if (!$user_id) return [];
     $map = ['oahu' => 'oahu-division', 'hawaii' => 'hawaii-division', 'kauai' => 'kauai-division', 'maui' => 'maui-division', 'molokai' => 'maui-division', 'lanai' => 'maui-division'];
     $out = [];
@@ -1140,6 +1145,10 @@ function ur_mg_render_settings_page() {
 
     // Member lookup.
     $q = isset($_GET['ur_mg_lookup']) ? sanitize_text_field(wp_unslash($_GET['ur_mg_lookup'])) : '';
+    echo '<h2 id="ur-mg-view-as">Preview the site</h2><p>See the site exactly as a member sees it: check a member below and click <em>View the site as this member</em>. Or preview a single group: ';
+    echo '<select onchange="if(this.value)location.href=this.value"><option value="">Choose a group&hellip;</option>';
+    foreach (ur_mg_groups() as $tid => $g) printf('<option value="%s">%s</option>', esc_url(ur_mg_view_as_url('group:' . (int) $tid)), esc_html($g['term']->name));
+    echo '</select> <span class="description">(Also in the admin bar on the front end: &#128065; View as member.)</span></p>';
     echo '<h2>Check a member</h2><form method="get"><input type="hidden" name="page" value="union_roll_member_groups">';
     printf('<input type="text" name="ur_mg_lookup" value="%s" placeholder="Email, username or user ID" size="40"> <button class="button">Check</button></form>', esc_attr($q));
     if ($q !== '') {
@@ -1158,7 +1167,129 @@ function ur_mg_render_settings_page() {
             $access = $ctx['staff'] ? 'Staff: sees everything' : ($ctx['blocked'] ? 'Blocked by member status: sees only unrestricted content' : ($names ? esc_html(implode(', ', $names)) : 'No groups: sees only unrestricted content'));
             printf('<tr><th>Access</th><td><strong>%s</strong></td></tr>', $access);
             echo '</tbody></table>';
+            printf('<p><a class="button button-primary" href="%s">View the site as this member</a> <span class="description">Opens the home page as this member sees it (red banner at the bottom; ends after 2 hours or when you click Stop preview).</span></p>',
+                esc_url(ur_mg_view_as_url('user:' . (int) $u->ID)));
         }
     }
     echo '</div>';
 }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin "View as": preview the front end as a specific member or a group.
+// Front end only (never wp-admin, the Elementor editor, or requests coming from wp-admin),
+// only for administrators, nonce-protected, expires after 2 hours.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const UR_MG_VIEW_AS_TTL = 2 * HOUR_IN_SECONDS;
+
+/** The real logged-in user is an administrator (checked without any preview applied). */
+function ur_mg_real_user_is_admin() {
+    $u = wp_get_current_user();
+    return $u && $u->exists() && !empty($u->allcaps['manage_options']);
+}
+
+function ur_mg_view_as_context_allowed() {
+    if (isset($_GET['elementor-preview']) || (isset($_GET['action']) && $_GET['action'] === 'elementor')) return false;
+    if (is_admin() && !wp_doing_ajax()) return false;
+    $is_rest = defined('REST_REQUEST') && REST_REQUEST;
+    if (wp_doing_ajax() || $is_rest) {
+        $ref = (string) wp_get_referer();
+        if ($ref === '' || strpos($ref, '/wp-admin/') !== false) return false;
+    }
+    return true;
+}
+
+/** @return array{mode:string,id:int,expires:int}|null */
+function ur_mg_view_as() {
+    static $va = false;
+    if ($va !== false) return $va;
+    $va = null;
+    if (!is_user_logged_in() || !ur_mg_real_user_is_admin() || !ur_mg_view_as_context_allowed()) return $va;
+    $saved = get_user_meta(get_current_user_id(), 'ur_mg_view_as', true);
+    if (!is_array($saved) || empty($saved['mode']) || empty($saved['id']) || (int) ($saved['expires'] ?? 0) < time()) return $va;
+    if (!in_array($saved['mode'], ['user', 'group'], true)) return $va;
+    return $va = ['mode' => $saved['mode'], 'id' => (int) $saved['id'], 'expires' => (int) $saved['expires']];
+}
+
+/** The member whose profile should drive per-member features (For You, My division). */
+function ur_mg_effective_user_id() {
+    $va = ur_mg_view_as();
+    return ($va && $va['mode'] === 'user') ? $va['id'] : get_current_user_id();
+}
+
+function ur_mg_view_as_url($value, $redirect = '') {
+    return add_query_arg([
+        'ur_mg_view_as' => $value,
+        '_ur_mg_nonce'  => wp_create_nonce('ur_mg_view_as'),
+        'ur_mg_back'    => rawurlencode($redirect ?: home_url('/')),
+    ], home_url('/'));
+}
+
+// Turn preview on/off.
+add_action('init', function () {
+    if (!isset($_GET['ur_mg_view_as']) || !is_user_logged_in() || !ur_mg_real_user_is_admin()) return;
+    if (!wp_verify_nonce(sanitize_text_field(wp_unslash($_GET['_ur_mg_nonce'] ?? '')), 'ur_mg_view_as')) return;
+    $val = sanitize_text_field(wp_unslash($_GET['ur_mg_view_as']));
+    $uid = get_current_user_id();
+    if ($val === 'off') {
+        delete_user_meta($uid, 'ur_mg_view_as');
+    } elseif (preg_match('/^(user|group):(\d+)$/', $val, $m)) {
+        $ok = $m[1] === 'user' ? (bool) get_userdata((int) $m[2]) : (bool) term_exists((int) $m[2], UR_MG_TAX);
+        if ($ok) update_user_meta($uid, 'ur_mg_view_as', ['mode' => $m[1], 'id' => (int) $m[2], 'expires' => time() + UR_MG_VIEW_AS_TTL]);
+    }
+    $back = isset($_GET['ur_mg_back']) ? esc_url_raw(rawurldecode(wp_unslash($_GET['ur_mg_back']))) : home_url('/');
+    wp_safe_redirect($back ?: home_url('/'));
+    exit;
+}, 1);
+
+function ur_mg_view_as_label($va) {
+    if ($va['mode'] === 'user') {
+        $u = get_userdata($va['id']);
+        $ctx = ur_mg_user_context($va['id']);
+        $names = [];
+        foreach (ur_mg_groups() as $tid => $g) if (in_array($tid, $ctx['groups'], true)) $names[] = $g['term']->name;
+        $who = $u ? $u->display_name . ' (#' . $u->ID . ')' : 'member #' . $va['id'];
+        if ($ctx['staff']) return $who . ': staff, sees everything';
+        if ($ctx['blocked']) return $who . ': blocked by member status, sees only unrestricted content';
+        return $who . ': ' . ($names ? implode(', ', $names) : 'no groups, sees only unrestricted content');
+    }
+    $t = get_term($va['id'], UR_MG_TAX);
+    return 'group "' . ($t && !is_wp_error($t) ? $t->name : '#' . $va['id']) . '" only (For You and My division are approximate in group mode)';
+}
+
+// Red banner on every front-end page while previewing.
+add_action('wp_footer', function () {
+    $va = ur_mg_view_as();
+    if (!$va) return;
+    $mins = max(1, (int) round(($va['expires'] - time()) / 60));
+    $here = (is_ssl() ? 'https://' : 'http://') . ($_SERVER['HTTP_HOST'] ?? '') . ($_SERVER['REQUEST_URI'] ?? '/');
+    echo '<div id="ur-mg-view-as-banner" style="position:fixed;left:0;right:0;bottom:0;z-index:99999;background:#b00020;color:#fff;padding:10px 16px;font:600 14px/1.4 system-ui,sans-serif;display:flex;gap:12px;align-items:center;justify-content:center;flex-wrap:wrap;box-shadow:0 -2px 8px rgba(0,0,0,.25)">'
+        . '<span>Previewing the site as ' . esc_html(ur_mg_view_as_label($va)) . '. Ends in ' . (int) $mins . ' min.</span>'
+        . '<a href="' . esc_url(ur_mg_view_as_url('off', $here)) . '" style="background:#fff;color:#b00020;padding:6px 14px;border-radius:4px;text-decoration:none">Stop preview</a></div>';
+}, 999);
+
+// Admin bar: "View as" menu (front end only).
+add_action('admin_bar_menu', function ($bar) {
+    if (is_admin() || !ur_mg_real_user_is_admin()) return;
+    $here = (is_ssl() ? 'https://' : 'http://') . ($_SERVER['HTTP_HOST'] ?? '') . ($_SERVER['REQUEST_URI'] ?? '/');
+    $here = remove_query_arg(['ur_mg_view_as', '_ur_mg_nonce', 'ur_mg_back'], $here);
+    $va = ur_mg_view_as();
+    $bar->add_node(['id' => 'ur-mg-view-as', 'title' => $va ? '&#128065; Previewing as member' : '&#128065; View as member', 'href' => admin_url('admin.php?page=union_roll_member_groups#ur-mg-view-as'),
+        'meta' => $va ? ['html' => '<style>#wp-admin-bar-ur-mg-view-as>.ab-item{background:#b00020!important;color:#fff!important}</style>'] : []]);
+    if ($va) $bar->add_node(['parent' => 'ur-mg-view-as', 'id' => 'ur-mg-view-as-off', 'title' => 'Stop preview', 'href' => ur_mg_view_as_url('off', $here)]);
+    $bar->add_node(['parent' => 'ur-mg-view-as', 'id' => 'ur-mg-view-as-member', 'title' => 'A specific member&hellip;', 'href' => admin_url('admin.php?page=union_roll_member_groups#ur-mg-view-as')]);
+    $by_parent = [];
+    foreach (ur_mg_groups() as $tid => $g) {
+        $parent = (int) (get_term($tid, UR_MG_TAX)->parent ?? 0);
+        $by_parent[$parent][] = $g['term'];
+    }
+    $add = function ($parent, $depth) use (&$add, $by_parent, $bar, $here) {
+        foreach ($by_parent[$parent] ?? [] as $t) {
+            $bar->add_node(['parent' => 'ur-mg-view-as', 'id' => 'ur-mg-view-as-g' . (int) $t->term_id,
+                'title' => str_repeat('&nbsp;&nbsp;&nbsp;', $depth) . 'Group: ' . esc_html($t->name), 'href' => ur_mg_view_as_url('group:' . (int) $t->term_id, $here)]);
+            $add((int) $t->term_id, $depth + 1);
+        }
+    };
+    $add(0, 0);
+}, 100);
