@@ -560,6 +560,120 @@ add_filter('attachment_fields_to_save', function ($post, $attachment) {
 }, 10, 2);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Admin: WP-Members Download Protect screen (Media > Download Protect)
+// Its upload/edit forms have no hooks, so the checkboxes are added to the form in the
+// browser and saved on admin_init around Download Protect's own save (priority 11).
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ur_mg_is_dp_screen() {
+    return is_admin() && isset($_GET['page']) && $_GET['page'] === 'wpmem-download-protect';
+}
+
+function ur_mg_dp_posted_terms() {
+    if (empty($_POST['ur_mg_dp_present']) || empty($_POST['ur_mg_dp_nonce'])) return null;
+    if (!wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['ur_mg_dp_nonce'])), 'ur_mg_dp')) return null;
+    return array_map('intval', (array) ($_POST['ur_mg_dp_terms'] ?? []));
+}
+
+add_action('admin_init', function () {
+    if (!ur_mg_is_dp_screen() || 'POST' !== ($_SERVER['REQUEST_METHOD'] ?? '')) return;
+    $terms = ur_mg_dp_posted_terms();
+    if ($terms === null) return;
+    $action = sanitize_text_field(wp_unslash($_POST['wpmem_admin_a'] ?? ''));
+    if ($action === 'dp_upload' || $action === 'dp_update') {
+        // A new or replacement file creates its attachment during Download Protect's save; tag it as it's created.
+        add_action('add_attachment', function ($id) use ($terms) {
+            static $done = false;
+            if ($done || !current_user_can('edit_post', $id)) return;
+            $done = true;
+            wp_set_object_terms((int) $id, $terms, UR_MG_TAX, false);
+        });
+    }
+    if ($action === 'dp_update') {
+        $id = (int) ($_POST['dpid'] ?? 0);
+        if ($id && get_post_type($id) === 'attachment' && current_user_can('edit_post', $id)) {
+            wp_set_object_terms($id, $terms, UR_MG_TAX, false);
+        }
+    }
+}, 10);
+
+add_action('admin_footer', function () {
+    if (!ur_mg_is_dp_screen() || !current_user_can('upload_files')) return;
+    $terms = get_terms(['taxonomy' => UR_MG_TAX, 'hide_empty' => false]);
+    if (is_wp_error($terms) || !$terms) return;
+
+    $edit_id = (isset($_GET['action']) && $_GET['action'] === 'edit') ? (int) ($_GET['id'] ?? 0) : 0;
+    $have    = $edit_id ? ur_mg_post_groups($edit_id) : [];
+    $by_parent = [];
+    foreach ($terms as $t) $by_parent[(int) $t->parent][] = $t;
+
+    $box  = '<li id="ur-mg-dp-box" style="margin:12px 0;padding:10px;border:1px solid #dcdcde;background:#fff;text-align:left">';
+    $box .= '<strong>Member Groups</strong><br><span class="description">Only these groups can open this file. Leave all unticked for every logged-in member.</span>';
+    $box .= '<div style="max-height:220px;overflow:auto;margin-top:6px">';
+    $render = function ($parent, $depth) use (&$render, $by_parent, $have, &$box) {
+        foreach ($by_parent[$parent] ?? [] as $t) {
+            $box .= sprintf('<label style="display:block;margin-left:%dpx"><input type="checkbox" name="ur_mg_dp_terms[]" value="%d"%s> %s</label>',
+                $depth * 16, (int) $t->term_id, checked(in_array((int) $t->term_id, $have, true), true, false), esc_html($t->name));
+            $render((int) $t->term_id, $depth + 1);
+        }
+    };
+    $render(0, 0);
+    $box .= '</div><input type="hidden" name="ur_mg_dp_present" value="1">'
+          . '<input type="hidden" name="ur_mg_dp_nonce" value="' . esc_attr(wp_create_nonce('ur_mg_dp')) . '"></li>';
+
+    // Group names per file key, for labels in the file list.
+    $labels = [];
+    if (!$edit_id) {
+        global $wpdb;
+        $rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT pm.meta_value AS dp_key, t.name FROM {$wpdb->postmeta} pm
+             INNER JOIN {$wpdb->term_relationships} tr ON tr.object_id = pm.post_id
+             INNER JOIN {$wpdb->term_taxonomy} tt ON tt.term_taxonomy_id = tr.term_taxonomy_id AND tt.taxonomy = %s
+             INNER JOIN {$wpdb->terms} t ON t.term_id = tt.term_id
+             WHERE pm.meta_key = '_wpmem_dp_key'", UR_MG_TAX));
+        foreach ((array) $rows as $r) $labels[$r->dp_key][] = $r->name;
+    }
+    ?>
+    <template id="ur-mg-dp-template"><?php echo $box; // Built from escaped parts above. ?></template>
+    <script>
+    (function () {
+        var tpl = document.getElementById('ur-mg-dp-template');
+        ['edit-file', 'upload-file'].forEach(function (id) {
+            var form = document.getElementById(id);
+            if (!form || !tpl) return;
+            var node = tpl.content.firstElementChild.cloneNode(true);
+            var ul = form.querySelector('ul');
+            var submit = form.querySelector('[type=submit]');
+            var anchor = submit ? submit.closest('li') : null;
+            if (id === 'upload-file' && submit) {
+                var div = document.createElement('div');
+                div.innerHTML = node.innerHTML;
+                div.setAttribute('style', node.getAttribute('style'));
+                submit.parentNode.insertBefore(div, submit);
+            } else if (anchor && ul) {
+                ul.insertBefore(node, anchor);
+            } else {
+                form.appendChild(node);
+            }
+        });
+        var labels = <?php echo wp_json_encode($labels); ?>;
+        document.querySelectorAll('table.wp-list-table tbody tr').forEach(function (tr) {
+            var keyCell = tr.querySelector('td.column-key');
+            var titleCell = tr.querySelector('td.column-title, th.column-title');
+            if (!keyCell || !titleCell) return;
+            var names = labels[keyCell.textContent.trim()];
+            if (!names) return;
+            var tag = document.createElement('div');
+            tag.style.cssText = 'margin-top:4px;font-size:12px;color:#2271b1';
+            tag.textContent = 'Member Groups: ' + names.join(', ');
+            titleCell.appendChild(tag);
+        });
+    })();
+    </script>
+    <?php
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Admin: group rule fields on the Member Groups screen
 // ─────────────────────────────────────────────────────────────────────────────
 
