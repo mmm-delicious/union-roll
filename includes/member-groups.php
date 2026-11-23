@@ -402,13 +402,24 @@ add_filter('rest_request_before_callbacks', function ($response, $handler, $requ
     $id = (int) $request->get_param('id');
     if (!$id) return $response;
     $cb = $handler['callback'] ?? null;
-    if (!is_array($cb) || !($cb[0] instanceof WP_REST_Posts_Controller)) return $response;
+    $is_posts_controller = is_array($cb) && ($cb[0] instanceof WP_REST_Posts_Controller);
+    $is_tec_event        = (bool) preg_match('#^/tribe/events/v\d+/events/\d+#', (string) $request->get_route());
+    if (!$is_posts_controller && !$is_tec_event) return $response;
     $pt = get_post_type($id);
     if ($pt && in_array($pt, ur_mg_post_types(), true) && !ur_mg_user_can_view($id)) {
         return new WP_Error('rest_forbidden', 'Not available.', ['status' => is_user_logged_in() ? 403 : 401]);
     }
     return $response;
 }, 10, 3);
+
+// The Events Calendar caches month-view HTML (and the events in it) once for every visitor.
+// While any content has groups, turn that cache off so each visitor gets their own list.
+add_filter('tribe_events_enable_month_view_cache', function ($enabled) {
+    return ur_mg_has_restrictions() ? false : $enabled;
+}, 99);
+add_filter('tribe_get_option_enable_month_view_cache', function ($value) {
+    return ur_mg_has_restrictions() ? false : $value;
+}, 99);
 
 // Previous / next post links.
 foreach (['get_previous_post_where', 'get_next_post_where'] as $ur_mg_hook) {
@@ -447,7 +458,13 @@ function ur_mg_dp_post_id_from_key($key) {
 // The actual download request. Runs after WP-Members' own login check.
 add_action('wpmem_dp_verify', function ($args) {
     $pid = (int) ($args['file_info']['post_id'] ?? 0);
-    if (!$pid || !is_user_logged_in() || ur_mg_user_can_view($pid)) return;
+    if (!$pid || ur_mg_user_can_view($pid)) return;
+    if (!is_user_logged_in()) {
+        // Files marked "Unrestricted" in Download Protect skip its login check; a group tag still requires login.
+        if (function_exists('wpmem_dp_do_error')) wpmem_dp_do_error('login', (string) ($args['key'] ?? ''));
+        wp_safe_redirect(wp_login_url());
+        exit;
+    }
     nocache_headers();
     wp_die(
         '<p>' . esc_html(ur_mg_settings()['denied_message']) . '</p>',
