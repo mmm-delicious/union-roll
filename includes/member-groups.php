@@ -88,6 +88,7 @@ add_action('init', function () {
 
 const UR_MG_RULE_KEYS = [
     'ur_mg_bu'         => 'Bargaining units',
+    'ur_mg_islands'    => 'Islands',
     'ur_mg_units'      => 'Unit numbers',
     'ur_mg_employers'  => 'Employers / jurisdictions',
     'ur_mg_job_titles' => 'Job title contains',
@@ -136,6 +137,7 @@ function ur_mg_groups($refresh = false) {
             'match'     => get_term_meta($tid, 'ur_mg_match', true) === 'all' ? 'all' : 'any',
             'bu'        => array_map('ur_mg_norm_bu', ur_mg_lines(get_term_meta($tid, 'ur_mg_bu', true))),
             'units'     => ur_mg_parse_units(get_term_meta($tid, 'ur_mg_units', true)),
+            'islands'   => array_map('strtolower', ur_mg_lines(get_term_meta($tid, 'ur_mg_islands', true))),
             'employers' => array_map('strtolower', ur_mg_lines(get_term_meta($tid, 'ur_mg_employers', true))),
             'titles'    => array_map('strtolower', preg_split('/[\r\n]+/', trim((string) get_term_meta($tid, 'ur_mg_job_titles', true)), -1, PREG_SPLIT_NO_EMPTY)),
         ];
@@ -167,6 +169,11 @@ function ur_mg_profile_matches(array $p, array $g) {
             }
         }
         $results[] = $hit;
+    }
+
+    if (!empty($g['islands'])) {
+        $isl = strtolower(trim((string) ($p['island'] ?? '')));
+        $results[] = $isl !== '' && in_array($isl, $g['islands'], true);
     }
 
     if ($g['employers']) {
@@ -235,7 +242,7 @@ function ur_mg_user_context($user_id = null) {
     }
 
     $profile = [];
-    foreach (['bargaining_unit', 'unit_number', 'employer', 'jurisdiction', 'job_title', 'member_status'] as $k) {
+    foreach (['bargaining_unit', 'unit_number', 'island', 'employer', 'jurisdiction', 'job_title', 'member_status'] as $k) {
         $profile[$k] = get_user_meta($user_id, $k, true);
     }
     if (ur_mg_status_blocked($profile['member_status'])) {
@@ -697,6 +704,28 @@ add_action('admin_footer', function () {
 // Admin: group rule fields on the Member Groups screen
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** Island choices: from the WP-Members "island" field when present, else the six islands. */
+function ur_mg_island_options() {
+    $opts = [];
+    if (function_exists('wpmem_fields')) {
+        $f = wpmem_fields();
+        foreach ((array) ($f['island']['options'] ?? []) as $val => $label) {
+            if ((string) $val !== '') $opts[] = (string) $val;
+        }
+    }
+    return $opts ?: ['Hawaii', 'Kauai', 'Lanai', 'Maui', 'Molokai', 'Oahu'];
+}
+
+function ur_mg_island_checkboxes($saved) {
+    $have = array_map('strtolower', ur_mg_lines($saved));
+    $html = '<input type="hidden" name="ur_mg_islands_present" value="1"><div style="display:flex;flex-wrap:wrap;gap:4px 16px">';
+    foreach (ur_mg_island_options() as $isl) {
+        $html .= sprintf('<label style="display:inline-block;width:auto"><input type="checkbox" name="ur_mg_islands[]" value="%1$s"%2$s> %3$s</label>',
+            esc_attr($isl), checked(in_array(strtolower($isl), $have, true), true, false), esc_html($isl));
+    }
+    return $html . '</div>';
+}
+
 function ur_mg_match_select($current) {
     return '<select name="ur_mg_match" id="ur_mg_match">'
         . '<option value="any"' . selected($current, 'any', false) . '>Any rule (members matching any box: bigger group)</option>'
@@ -705,12 +734,13 @@ function ur_mg_match_select($current) {
 }
 
 function ur_mg_match_help() {
-    return 'Example: Bargaining unit 10 + Job title ADULT CORRECTIONS OFFICER. "Any" = all BU 10 members plus all ACOs. "All" = only BU 10 ACOs. Empty boxes are ignored.';
+    return 'Example: Bargaining unit 10 + Job title ADULT CORRECTIONS OFFICER. "Any" = all BU 10 members plus all ACOs. "All" = only BU 10 ACOs. Likewise Island Maui + Bargaining unit 1 on "All" = BU 1 members on Maui. Empty boxes are ignored.';
 }
 
 function ur_mg_rule_help($key) {
     switch ($key) {
         case 'ur_mg_bu':         return 'e.g. 1 or 10 (0 = Private Sector). Comma-separated.';
+        case 'ur_mg_islands':    return 'Member\'s Island on their profile. Tick one or more.';
         case 'ur_mg_units':      return 'e.g. 535 or 550-554, 149, 249. Ranges allowed.';
         case 'ur_mg_employers':  return 'One per line, exact name as on the member profile (Employer or Jurisdiction), e.g. US Renal Care.';
         case 'ur_mg_job_titles': return 'One per line; matches if the job title contains the text, e.g. ADULT CORRECTIONS OFFICER.';
@@ -723,6 +753,10 @@ add_action(UR_MG_TAX . '_add_form_fields', function () {
     echo '<p><strong>Who is in this group?</strong> Fill in one or more rules below.</p>';
     echo '<div class="form-field"><label for="ur_mg_match">Match</label>' . ur_mg_match_select('any') . '<p>' . esc_html(ur_mg_match_help()) . '</p></div>';
     foreach (UR_MG_RULE_KEYS as $k => $label) {
+        if ($k === 'ur_mg_islands') {
+            printf('<div class="form-field"><label>%1$s</label>%2$s<p>%3$s</p></div>', esc_html($label), ur_mg_island_checkboxes(''), esc_html(ur_mg_rule_help($k)));
+            continue;
+        }
         printf('<div class="form-field"><label for="%1$s">%2$s</label><textarea name="%1$s" id="%1$s" rows="2"></textarea><p>%3$s</p></div>',
             esc_attr($k), esc_html($label), esc_html(ur_mg_rule_help($k)));
     }
@@ -733,6 +767,11 @@ add_action(UR_MG_TAX . '_edit_form_fields', function ($term) {
     printf('<tr class="form-field"><th scope="row"><label for="ur_mg_match">Match</label></th><td>%s<p class="description">%s</p></td></tr>',
         ur_mg_match_select(get_term_meta($term->term_id, 'ur_mg_match', true) === 'all' ? 'all' : 'any'), esc_html(ur_mg_match_help()));
     foreach (UR_MG_RULE_KEYS as $k => $label) {
+        if ($k === 'ur_mg_islands') {
+            printf('<tr class="form-field"><th scope="row">%1$s</th><td>%2$s<p class="description">%3$s</p></td></tr>',
+                esc_html($label), ur_mg_island_checkboxes((string) get_term_meta($term->term_id, $k, true)), esc_html(ur_mg_rule_help($k)));
+            continue;
+        }
         printf('<tr class="form-field"><th scope="row"><label for="%1$s">%2$s</label></th><td><textarea name="%1$s" id="%1$s" rows="3">%3$s</textarea><p class="description">%4$s</p></td></tr>',
             esc_attr($k), esc_html($label), esc_textarea((string) get_term_meta($term->term_id, $k, true)), esc_html(ur_mg_rule_help($k)));
     }
@@ -743,7 +782,17 @@ add_action(UR_MG_TAX . '_edit_form_fields', function ($term) {
 function ur_mg_save_term_rules($term_id) {
     if (!isset($_POST['ur_mg_term_nonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['ur_mg_term_nonce'])), 'ur_mg_term')) return;
     if (!current_user_can('manage_options')) return;
+    if (!empty($_POST['ur_mg_islands_present'])) {
+        $allowed = array_map('strtolower', ur_mg_island_options());
+        $picked  = [];
+        foreach ((array) wp_unslash($_POST['ur_mg_islands'] ?? []) as $isl) {
+            $isl = sanitize_text_field($isl);
+            if (in_array(strtolower($isl), $allowed, true)) $picked[] = $isl;
+        }
+        update_term_meta($term_id, 'ur_mg_islands', implode(', ', $picked));
+    }
     foreach (array_keys(UR_MG_RULE_KEYS) as $k) {
+        if ($k === 'ur_mg_islands') continue;
         if (isset($_POST[$k])) update_term_meta($term_id, $k, sanitize_textarea_field(wp_unslash($_POST[$k])));
     }
     if (isset($_POST['ur_mg_match'])) {
@@ -759,7 +808,7 @@ function ur_mg_member_counts() {
     $cached = get_transient('ur_mg_member_counts');
     if (is_array($cached)) return $cached;
     global $wpdb;
-    $keys = ['bargaining_unit', 'unit_number', 'employer', 'jurisdiction', 'job_title', 'member_status'];
+    $keys = ['bargaining_unit', 'unit_number', 'island', 'employer', 'jurisdiction', 'job_title', 'member_status'];
     $in   = implode(',', array_fill(0, count($keys), '%s'));
     $rows = $wpdb->get_results($wpdb->prepare("SELECT user_id, meta_key, meta_value FROM {$wpdb->usermeta} WHERE meta_key IN ($in)", $keys), ARRAY_A);
     $profiles = [];
@@ -885,7 +934,7 @@ function ur_mg_render_settings_page() {
             foreach (ur_mg_groups() as $tid => $g) if (in_array($tid, $ctx['groups'], true)) $names[] = $g['term']->name;
             echo '<table class="widefat striped" style="max-width:700px"><tbody>';
             printf('<tr><th>User</th><td>%s (#%d)</td></tr>', esc_html($u->display_name), (int) $u->ID);
-            foreach (['bargaining_unit' => 'Bargaining unit', 'unit_number' => 'Unit', 'employer' => 'Employer', 'jurisdiction' => 'Jurisdiction', 'job_title' => 'Job title', 'member_status' => 'Member status'] as $k => $label) {
+            foreach (['bargaining_unit' => 'Bargaining unit', 'unit_number' => 'Unit', 'island' => 'Island', 'employer' => 'Employer', 'jurisdiction' => 'Jurisdiction', 'job_title' => 'Job title', 'member_status' => 'Member status'] as $k => $label) {
                 printf('<tr><th>%s</th><td>%s</td></tr>', esc_html($label), esc_html((string) get_user_meta($u->ID, $k, true)));
             }
             $access = $ctx['staff'] ? 'Staff: sees everything' : ($ctx['blocked'] ? 'Blocked by member status: sees only unrestricted content' : ($names ? esc_html(implode(', ', $names)) : 'No groups: sees only unrestricted content'));

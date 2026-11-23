@@ -4,7 +4,7 @@ Tags: event, check-in, qr code, barcode, guest list
 Requires at least: 5.0
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 3.21.3
+Stable tag: 3.22.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -15,6 +15,10 @@ Generate QR codes for event check-in and manage events with a live dashboard, gu
 UnionRoll lets you create events, import guest lists from CSV, and check guests in via QR code, barcode, or phone number lookup. Includes a live admin dashboard with charts and sortable tables.
 
 == Changelog ==
+
+= 3.22.0 =
+* New: Island rule for Member Groups (tick Hawaii, Kauai, Lanai, Maui, Molokai, Oahu), matched against the member's Island. Works with Any/All, e.g. All rules + BU 1 + Maui = BU 1 members on Maui.
+* The member checker on the settings page now shows the member's island.
 
 = 3.21.3 =
 * New: Member Groups "Match" option per group: Any rule (rules add up, the default and existing behaviour) or All rules (every filled-in rule must match, e.g. BU 10 AND Adult Corrections Officer). Shown as a column on the Member Groups list.
