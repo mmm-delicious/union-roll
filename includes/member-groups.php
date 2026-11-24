@@ -668,6 +668,19 @@ function ur_mg_for_you_items($user_id, $limit = 5) {
     return $out;
 }
 
+/** The page that shows the member's UnionRoll QR card ([mmm_user_qr]), or '' if none. Cached a day. */
+function ur_mg_membership_card_url() {
+    $id = get_transient('ur_mg_card_page');
+    if ($id === false) {
+        global $wpdb;
+        $id = (int) $wpdb->get_var("SELECT p.ID FROM {$wpdb->posts} p LEFT JOIN {$wpdb->postmeta} m ON m.post_id = p.ID AND m.meta_key = '_elementor_data'
+            WHERE p.post_type = 'page' AND p.post_status = 'publish' AND (p.post_content LIKE '%[mmm_user_qr%' OR m.meta_value LIKE '%[mmm_user_qr%') ORDER BY p.ID LIMIT 1");
+        set_transient('ur_mg_card_page', $id, DAY_IN_SECONDS);
+    }
+    return $id ? get_permalink((int) $id) : '';
+}
+add_action('save_post_page', function () { delete_transient('ur_mg_card_page'); });
+
 /** The page that shows [ur_for_you] (setting, else the first published page containing it, else home). */
 function ur_mg_for_you_url() {
     $set = trim((string) (ur_mg_settings()['for_you_url'] ?? ''));
@@ -688,16 +701,26 @@ add_shortcode('ur_for_you', function ($atts) {
     if (!is_user_logged_in()) return '';
     $uid = get_current_user_id();
     $items = ur_mg_for_you_items($uid, max(1, (int) $atts['limit']));
-    if (!$items || !array_filter($items)) return '';
+    $card  = ur_mg_membership_card_url();
+    $has   = $items && array_filter($items);
+    if (!$has && !$card) return '';
     $cols = ['contracts' => 'Your contracts', 'news' => 'News for your unit', 'events' => 'Your upcoming meetings'];
     $html = '<style>.ur-for-you{max-width:1140px;margin:0 auto;padding:40px 20px}.ur-for-you h2{margin:0 0 6px}.ur-for-you .ur-fy-sub{margin:0 0 22px;opacity:.8}'
         . '.ur-fy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px}'
         . '.ur-fy-card{background:#fff;border:1px solid rgba(0,0,0,.08);border-top:4px solid var(--e-global-color-primary,#1f3a68);border-radius:6px;padding:18px 20px}'
         . '.ur-fy-card h3{font-size:1.05em;margin:0 0 10px}.ur-fy-card ul{list-style:none;margin:0;padding:0}.ur-fy-card li{padding:8px 0;border-top:1px solid rgba(0,0,0,.06)}'
-        . '.ur-fy-card li:first-child{border-top:0}.ur-fy-card small{display:block;opacity:.7}</style>';
-    $html .= '<section id="for-you" class="ur-for-you"><h2>' . esc_html($atts['title']) . '</h2><p class="ur-fy-sub">Contracts, news and meetings for your unit and division.</p><div class="ur-fy-grid">';
+        . '.ur-fy-card li:first-child{border-top:0}.ur-fy-card small{display:block;opacity:.7}'
+        . '.ur-fy-member-card{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:0 0 20px;padding:16px 20px;border-radius:6px;background:var(--e-global-color-primary,#1f3a68);color:#fff}'
+        . '.ur-fy-member-card strong{display:block;font-size:1.1em}.ur-fy-member-card a{background:#fff;color:var(--e-global-color-primary,#1f3a68);padding:10px 20px;border-radius:4px;text-decoration:none;font-weight:600;white-space:nowrap}</style>';
+    $html .= '<section id="for-you" class="ur-for-you"><h2>' . esc_html($atts['title']) . '</h2>'
+        . ($has ? '<p class="ur-fy-sub">Contracts, news and meetings for your unit and division.</p>' : '');
+    if ($card) {
+        $html .= '<div class="ur-fy-member-card"><span><strong>Your membership card</strong>Show your QR code to check in at union meetings and events.</span>'
+            . '<a href="' . esc_url($card) . '">Open my card</a></div>';
+    }
+    $html .= '<div class="ur-fy-grid">';
     foreach ($cols as $k => $label) {
-        if (!$items[$k]) continue;
+        if (empty($items[$k])) continue;
         $html .= '<div class="ur-fy-card"><h3>' . esc_html($label) . '</h3><ul>';
         foreach ($items[$k] as $it) {
             $html .= '<li><a href="' . esc_url($it['url']) . '">' . esc_html($it['title']) . '</a>' . (!empty($it['meta']) ? '<small>' . esc_html($it['meta']) . '</small>' : '') . '</li>';
