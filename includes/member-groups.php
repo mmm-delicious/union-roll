@@ -416,7 +416,7 @@ add_action('template_redirect', function () {
         . '<h1 style="margin-bottom:16px">Members of this group only</h1>'
         . '<p style="font-size:1.1em;line-height:1.6">' . esc_html($msg) . '</p>'
         . '<p style="margin-top:28px;display:flex;gap:12px;justify-content:center;flex-wrap:wrap">'
-        . '<a class="elementor-button" style="padding:12px 24px" href="' . esc_url(home_url('/#for-you')) . '">See what\'s for you</a>'
+        . '<a class="elementor-button" style="padding:12px 24px" href="' . esc_url(ur_mg_for_you_url() . '#for-you') . '">See what\'s for you</a>'
         . '<a class="elementor-button" style="padding:12px 24px;background:transparent;border:2px solid currentColor;color:inherit" href="' . esc_url(home_url('/')) . '">Back to home</a>'
         . '</p></main>';
     get_footer();
@@ -667,6 +667,21 @@ function ur_mg_for_you_items($user_id, $limit = 5) {
     foreach ($out as $k => $v) $out[$k] = array_slice($v, 0, $limit);
     return $out;
 }
+
+/** The page that shows [ur_for_you] (setting, else the first published page containing it, else home). */
+function ur_mg_for_you_url() {
+    $set = trim((string) (ur_mg_settings()['for_you_url'] ?? ''));
+    if ($set !== '') return $set;
+    $id = get_transient('ur_mg_for_you_page');
+    if ($id === false) {
+        global $wpdb;
+        $id = (int) $wpdb->get_var("SELECT p.ID FROM {$wpdb->posts} p LEFT JOIN {$wpdb->postmeta} m ON m.post_id = p.ID AND m.meta_key = '_elementor_data'
+            WHERE p.post_type = 'page' AND p.post_status = 'publish' AND (p.post_content LIKE '%[ur_for_you%' OR m.meta_value LIKE '%[ur_for_you%') ORDER BY p.ID LIMIT 1");
+        set_transient('ur_mg_for_you_page', $id, DAY_IN_SECONDS);
+    }
+    return $id ? get_permalink((int) $id) : home_url('/');
+}
+add_action('save_post_page', function () { delete_transient('ur_mg_for_you_page'); });
 
 add_shortcode('ur_for_you', function ($atts) {
     $atts = shortcode_atts(['limit' => 5, 'title' => 'For You'], $atts, 'ur_for_you');
@@ -1109,6 +1124,7 @@ function ur_mg_render_settings_page() {
             'staff_domains'    => sanitize_textarea_field(wp_unslash($_POST['staff_domains'] ?? '')),
             'blocked_statuses' => sanitize_textarea_field(wp_unslash($_POST['blocked_statuses'] ?? '')),
             'denied_message'   => sanitize_textarea_field(wp_unslash($_POST['denied_message'] ?? '')),
+            'for_you_url'      => esc_url_raw(wp_unslash($_POST['for_you_url'] ?? '')),
         ], false);
         delete_transient('ur_mg_member_counts');
         $notice = 'Settings saved.';
@@ -1139,6 +1155,8 @@ function ur_mg_render_settings_page() {
     echo '<table class="form-table">';
     printf('<tr><th>Staff email domains</th><td><textarea name="staff_domains" rows="2" cols="50">%s</textarea><p class="description">Editors and administrators always see everything. Accounts on these domains see everything only once verified (below, or on the user\'s profile).</p></td></tr>', esc_textarea($s['staff_domains']));
     printf('<tr><th>Member statuses with no group access</th><td><textarea name="blocked_statuses" rows="6" cols="50">%s</textarea><p class="description">One per line, matched against the member\'s Member Status. These members only see content with no group ticked.</p></td></tr>', esc_textarea($s['blocked_statuses']));
+    printf('<tr><th>For You page</th><td><input type="url" name="for_you_url" value="%s" class="regular-text" placeholder="%s"><p class="description">Where "See what\'s for you" and View-as previews go. Leave empty to use the page that contains [ur_for_you] (now: %s).</p></td></tr>',
+        esc_attr($s['for_you_url'] ?? ''), esc_attr(home_url('/')), esc_html(ur_mg_for_you_url()));
     printf('<tr><th>Message when access is denied</th><td><textarea name="denied_message" rows="3" cols="80">%s</textarea></td></tr>', esc_textarea($s['denied_message']));
     echo '</table><p><button class="button button-primary" name="ur_mg_save" value="1">Save settings</button> ';
     echo '<button class="button" name="ur_mg_verify_all" value="1" onclick="return confirm(\'Verify every account currently on the staff domains?\')">Verify all current staff-domain accounts</button></p></form>';
@@ -1222,7 +1240,7 @@ function ur_mg_view_as_url($value, $redirect = '') {
     return add_query_arg([
         'ur_mg_view_as' => $value,
         '_ur_mg_nonce'  => wp_create_nonce('ur_mg_view_as'),
-        'ur_mg_back'    => rawurlencode($redirect ?: home_url('/')),
+        'ur_mg_back'    => rawurlencode($redirect ?: ur_mg_for_you_url()),
     ], home_url('/'));
 }
 
