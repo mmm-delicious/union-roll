@@ -40,7 +40,7 @@ function ur_mg_lines($text) {
 }
 
 function ur_mg_post_types() {
-    return apply_filters('ur_mg_post_types', ['post', 'page', 'tribe_events', 'attachment']);
+    return apply_filters('ur_mg_post_types', ['post', 'page', 'attachment']);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -297,6 +297,7 @@ function ur_mg_post_groups($post_id) {
 
 function ur_mg_user_can_view($post_id, $user_id = null) {
     if (!$post_id || !ur_mg_has_restrictions()) return true;
+    if (!in_array(get_post_type($post_id), ur_mg_post_types(), true)) return true;
     $groups = ur_mg_post_groups($post_id);
     if (!$groups) return true;
     $ctx = ur_mg_user_context($user_id);
@@ -430,23 +431,13 @@ add_filter('rest_request_before_callbacks', function ($response, $handler, $requ
     if (!$id) return $response;
     $cb = $handler['callback'] ?? null;
     $is_posts_controller = is_array($cb) && ($cb[0] instanceof WP_REST_Posts_Controller);
-    $is_tec_event        = (bool) preg_match('#^/tribe/events/v\d+/events/\d+#', (string) $request->get_route());
-    if (!$is_posts_controller && !$is_tec_event) return $response;
+    if (!$is_posts_controller) return $response;
     $pt = get_post_type($id);
     if ($pt && in_array($pt, ur_mg_post_types(), true) && !ur_mg_user_can_view($id)) {
         return new WP_Error('rest_forbidden', 'Not available.', ['status' => is_user_logged_in() ? 403 : 401]);
     }
     return $response;
 }, 10, 3);
-
-// The Events Calendar caches month-view HTML (and the events in it) once for every visitor.
-// While any content has groups, turn that cache off so each visitor gets their own list.
-add_filter('tribe_events_enable_month_view_cache', function ($enabled) {
-    return ur_mg_has_restrictions() ? false : $enabled;
-}, 99);
-add_filter('tribe_get_option_enable_month_view_cache', function ($value) {
-    return ur_mg_has_restrictions() ? false : $value;
-}, 99);
 
 // Previous / next post links.
 foreach (['get_previous_post_where', 'get_next_post_where'] as $ur_mg_hook) {
@@ -577,9 +568,6 @@ add_filter('elementor/element/is_dynamic_content', function ($is_dynamic, $raw_d
     $s = (array) ($raw_data['settings'] ?? []);
     $classes = (string) ($s['_css_classes'] ?? '') . ' ' . (string) ($s['css_classes'] ?? '');
     if (strpos($classes, 'ur-group-') !== false) return true;
-    // Third-party widgets that list posts or events build their output from a query: never cache them.
-    $type = (string) ($raw_data['widgetType'] ?? '');
-    if ($type !== '' && strpos($type, 'eael-') === 0 && preg_match('/post|event|ticker|timeline|calendar/', $type)) return true;
     $json = (string) wp_json_encode($s);
     foreach (['ur_group_only', 'wpmem_file', 'ur_for_you', 'ur_my_division', 'a=download'] as $needle) {
         if (strpos($json, $needle) !== false) return true;
