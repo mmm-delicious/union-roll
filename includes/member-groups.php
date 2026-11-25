@@ -720,7 +720,7 @@ add_shortcode('ur_for_you', function ($atts) {
     // (Poppins 600, 40px / 28px mobile), card titles like the call-to-action titles (Poppins 600, 25px).
     $html = '<style>.ur-for-you{max-width:1140px;margin:0 auto;padding:40px 20px;font-family:Poppins,sans-serif}'
         . '.ur-for-you h2{margin:0 0 10px;font-family:Poppins,sans-serif;font-size:40px;font-weight:600;line-height:1.2;text-align:center;color:var(--e-global-color-primary,#1C244B)}'
-        . '.ur-for-you .ur-fy-sub{margin:0 0 28px;text-align:center;font-size:16px;font-weight:300;line-height:1.5;color:var(--e-global-color-text,#324A6D)}'
+        . '.ur-for-you .ur-fy-kicker{margin:0 0 4px;text-align:center;font-size:14px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#D3C89D}.ur-for-you .ur-fy-sub{margin:0 0 28px;text-align:center;font-size:16px;font-weight:300;line-height:1.5;color:var(--e-global-color-text,#324A6D)}'
         . '.ur-fy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px}'
         . '.ur-for-you .ur-fy-card{background:var(--e-global-color-primary,#1C244B);color:#F3F5F8;border-top:4px solid #D3C89D;border-radius:6px;padding:20px 22px}'
         . '.ur-for-you .ur-fy-card h3{font-family:Poppins,sans-serif;font-size:25px;font-weight:600;line-height:1.2;margin:0 0 12px;color:#fff}.ur-for-you .ur-fy-card li{font-size:16px;font-weight:300;line-height:1.5}.ur-fy-card ul{list-style:none;margin:0;padding:0}.ur-fy-card li{padding:10px 0;border-top:1px solid rgba(255,255,255,.15)}'
@@ -731,7 +731,13 @@ add_shortcode('ur_for_you', function ($atts) {
         . '.ur-for-you .ur-fy-member-card a{background:#D3C89D;color:#fff;padding:10px 22px;border-radius:4px;text-decoration:none;font-weight:700;white-space:nowrap}'
         . '.ur-for-you .ur-fy-member-card a:hover,.ur-for-you .ur-fy-member-card a:focus{background:#fff;color:#D3C89D}'
         . '@media (max-width:767px){.ur-for-you h2{font-size:28px;line-height:1.1}.ur-for-you .ur-fy-card h3,.ur-for-you .ur-fy-member-card strong{font-size:22px}}</style>';
-    $html .= '<section id="for-you" class="ur-for-you"><h2>' . esc_html($atts['title']) . '</h2>'
+    // Greeting with the member's first name (the previewed member while an admin uses View as).
+    $who = get_userdata(function_exists('ur_mg_effective_user_id') ? ur_mg_effective_user_id() : $uid);
+    $first = $who ? trim((string) $who->first_name) : '';
+    if ($first === '' && $who) $first = trim(explode(' ', (string) $who->display_name)[0]);
+    $html .= '<section id="for-you" class="ur-for-you">'
+        . '<p class="ur-fy-kicker">' . esc_html($atts['title']) . '</p>'
+        . '<h2>' . esc_html($first !== '' ? 'Welcome, ' . $first : 'Welcome') . '</h2>'
         . ($has ? '<p class="ur-fy-sub">Contracts, letters, news and meetings for your unit and division.</p>' : '');
     if ($card) {
         $html .= '<div class="ur-fy-member-card"><span><strong>Your membership card</strong>Show your QR code to check in at union meetings and events.</span>'
