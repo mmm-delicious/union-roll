@@ -4,7 +4,7 @@ Tags: union, membership, member access, check-in, qr code
 Requires at least: 5.0
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 3.25.2
+Stable tag: 3.25.3
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -19,6 +19,10 @@ UnionRoll is a membership management toolkit for unions:
 * Union Reps: each member sees their Union Representative, and the contact form routes to that rep with the Division Director on BCC. Assignments are updated by uploading the Cognito export.
 
 == Changelog ==
+
+= 3.25.3 =
+* Union Reps: an admin using "View as member" can test the contact form as that member; such messages always go to the test address only, never to reps.
+* Preview no longer lists the UPW staff unit (529) as missing a rep.
 
 = 3.25.2 =
 * Union Reps: department-based routing uses each member's own department (user meta ur_department, from the roster) before the unit's department; departments with no rep row are extrapolated from units of that department that have a rep; otherwise the Division Director.
