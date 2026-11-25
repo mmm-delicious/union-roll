@@ -51,9 +51,9 @@ const UR_REP_HAWAII_UNIT_DEPT_SEED = [
     '170' => 'Department of Public Works', '171' => 'Department of Water Supply', '172' => 'Department of Environmental Management',
 ];
 
-function ur_rep_data() {
+function ur_rep_data($reload = false) {
     static $d = null;
-    if ($d === null) {
+    if ($d === null || $reload) {
         $d = get_option('ur_rep_data');
         if (!is_array($d)) $d = ur_rep_defaults();
         $d += ur_rep_defaults();
@@ -64,6 +64,7 @@ function ur_rep_data() {
 function ur_rep_save_data(array $new, $keep_prev = true) {
     if ($keep_prev) update_option('ur_rep_data_prev', get_option('ur_rep_data', ur_rep_defaults()), false);
     update_option('ur_rep_data', $new, false);
+    ur_rep_data(true); // the admin screen re-reads the data in the same request
 }
 
 function ur_rep_settings() {
@@ -822,6 +823,8 @@ function ur_rep_plan_from_staff() {
     $report = ['changes' => [], 'errors' => [], 'notes' => []];
     foreach ($people as $slug => $p) {
         $old = $d['reps'][$slug] ?? null;
+        // Clerks and other staff are not reps: never add them (existing entries are still refreshed).
+        if (!$old && ($p['role'] ?? '') === 'other') continue;
         if (!$old) { $new['reps'][$slug] = $p; $report['changes'][] = 'Add ' . $p['name'] . ' (' . $p['title'] . ', ' . $p['division'] . ')'; continue; }
         $diff = [];
         // The assignment list decides who is a director and which division; the Staff page fills in the rest.
@@ -893,6 +896,7 @@ function ur_rep_handle_post() {
         $cur = get_option('ur_rep_data', ur_rep_defaults());
         update_option('ur_rep_data', $prev, false);
         update_option('ur_rep_data_prev', $cur, false);
+        ur_rep_data(true);
         return 'Restored the previous version. (Undo again to switch back.)';
     }
     if ($act === 'reps') {

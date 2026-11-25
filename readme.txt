@@ -4,7 +4,7 @@ Tags: union, membership, member access, check-in, qr code
 Requires at least: 5.0
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 3.26.1
+Stable tag: 3.26.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -19,6 +19,10 @@ UnionRoll is a membership management toolkit for unions:
 * Union Reps: each member sees their Union Representative, and the contact form routes to that rep with the Division Director on BCC. Assignments are updated by uploading the Cognito export.
 
 == Changelog ==
+
+= 3.26.2 =
+* Union Reps screen: after Save reps / Apply / Undo the page now shows the saved list right away (it showed the old list until reload).
+* Import from the Staff page no longer adds clerks and other non-rep staff.
 
 = 3.26.1 =
 * Fix: the rep form's name, email and phone fields are now actually pre-filled (Elementor builds input attributes before the render filter, so the value attribute is set directly).
