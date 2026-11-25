@@ -2,9 +2,9 @@
 Contributors: mmmdelicious
 Tags: union, membership, member access, check-in, qr code
 Requires at least: 5.0
-Tested up to: 6.9
+Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.26.3
+Stable tag: 3.26.4
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -19,6 +19,9 @@ UnionRoll is a membership management toolkit for unions:
 * Union Reps: each member sees their Union Representative, and the contact form routes to that rep with the Division Director on BCC. Assignments are updated by uploading the Cognito export.
 
 == Changelog ==
+
+= 3.26.4 =
+* Marked as tested with WordPress 7.1 (the live site runs 7.1.5).
 
 = 3.26.3 =
 * Removed the "temporary" rep option. A "- Temporary" note after a rep's name in a Word upload is simply ignored.
