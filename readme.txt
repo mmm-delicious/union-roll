@@ -4,7 +4,7 @@ Tags: event, check-in, qr code, barcode, guest list
 Requires at least: 5.0
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 3.24.7
+Stable tag: 3.25.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -15,6 +15,12 @@ Generate QR codes for event check-in and manage events with a live dashboard, gu
 UnionRoll lets you create events, import guest lists from CSV, and check guests in via QR code, barcode, or phone number lookup. Includes a live admin dashboard with charts and sortable tables.
 
 == Changelog ==
+
+= 3.25.0 =
+* New: Union Reps (UnionRoll → Union Reps). Members see their Union Representative (photo, name, title, phone) from their unit number via [ur_my_rep] and in For You.
+* Upload a division's "Unit Assignments" .docx as it arrives; preview every change before Apply; one-click Undo. Import rep names, titles, phones, emails and photos from the Staff page (with preview).
+* Routes the Elementor Pro form named "Contact my Union Rep" to the member's rep with the Division Director on BCC, Reply-To the member; routing is decided on the server from the member's own unit. Audit fields (member_name, member_email, member_phone, member_unit, routed_to) are filled from the account when the form has them.
+* Test mode (on by default) sends every message only to the test address, showing the real recipients in the subject.
 
 = 3.24.7 =
 * For You: headings match the site's Elementor type. Section title is Poppins 600 at 40px (28px on mobile), centred; card titles and the membership card title are Poppins 600 at 25px; body text Poppins 300.
