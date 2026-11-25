@@ -38,6 +38,8 @@ function ur_rep_norm_dept($name) {
  * Editable under Union Reps; to be confirmed by the Hawaii Division.
  */
 const UR_REP_HAWAII_UNIT_DEPT_SEED = [
+    '110' => 'Health', '116' => 'Public Safety', '121' => 'Land & Natural Resources', '123' => 'Public Safety',
+    '155' => 'Department of Parks & Recreation', '161' => 'Department of Parks & Recreation',
     '102' => 'DAGS', '103' => 'DOT', '105' => 'DOE', '108' => 'DOE', '109' => 'Hawaii Health Systems Corporation',
     '111' => 'Hawaii Health Systems Corporation', '112' => 'Hawaii Health Systems Corporation', '115' => 'DOT',
     '117' => 'Hawaii Health Systems Corporation', '118' => 'Hawaii Health Systems Corporation', '119' => 'DOT',
@@ -111,11 +113,12 @@ function ur_rep_for_user($user_id = null) {
     $d = ur_rep_data();
     $a = $d['units'][$unit] ?? null;
     $division = ur_rep_division_for_unit($unit);
-    if (!$a && $unit !== '' && !empty($d['unit_departments'][$unit])) {
-        // Department-based division (Hawaii): unit → department → rep.
-        $dk = ur_rep_norm_dept($d['unit_departments'][$unit]);
-        $hit = $d['departments'][$division][$dk] ?? null;
-        if ($hit) $a = ['rep' => $hit['rep'], 'division' => $division, 'temporary' => false];
+    if (!$a && $unit !== '') {
+        // Department-based divisions (Hawaii): the member's own department (from the roster),
+        // else the unit's department, then that department's rep.
+        $dept = trim((string) get_user_meta((int) $user_id, 'ur_department', true)) ?: (string) ($d['unit_departments'][$unit] ?? '');
+        $slug = $dept !== '' ? ur_rep_for_department($division, $dept) : '';
+        if ($slug) $a = ['rep' => $slug, 'division' => $division, 'temporary' => false];
     }
     $rep = ($a && isset($d['reps'][$a['rep']])) ? $d['reps'][$a['rep']] + ['slug' => $a['rep']] : null;
     return [
@@ -125,6 +128,21 @@ function ur_rep_for_user($user_id = null) {
         'director'  => $division ? ur_rep_director($division) : null,
         'temporary' => !empty($a['temporary']),
     ];
+}
+
+/**
+ * Rep for a department in a division: the assignments list's department rows first; otherwise
+ * extrapolate from units of that department that have a rep by unit number (one rep only).
+ */
+function ur_rep_for_department($division, $dept) {
+    $d = ur_rep_data();
+    $dk = ur_rep_norm_dept($dept);
+    if (!empty($d['departments'][$division][$dk]['rep'])) return $d['departments'][$division][$dk]['rep'];
+    $reps = [];
+    foreach ($d['unit_departments'] as $u => $ud) {
+        if (ur_rep_norm_dept($ud) === $dk && !empty($d['units'][$u]['rep']) && ($d['units'][$u]['division'] ?? '') === $division) $reps[$d['units'][$u]['rep']] = true;
+    }
+    return count($reps) === 1 ? (string) key($reps) : '';
 }
 
 function ur_rep_phone_link($phone) {
@@ -205,8 +223,25 @@ add_shortcode('ur_my_rep', function ($atts) {
 // The card and the logged-out text differ per viewer: never serve them from Elementor's element cache.
 add_filter('elementor/element/is_dynamic_content', function ($is_dynamic, $raw_data) {
     if ($is_dynamic) return $is_dynamic;
-    return strpos((string) wp_json_encode($raw_data['settings'] ?? []), 'ur_my_rep') !== false;
+    $json = (string) wp_json_encode($raw_data['settings'] ?? []);
+    return strpos($json, 'ur_my_rep') !== false || strpos($json, 'ur-logged-in-only') !== false || strpos($json, 'ur-logged-out-only') !== false;
 }, 11, 2);
+
+// Elementor elements with CSS class "ur-logged-in-only" / "ur-logged-out-only" show only to that audience
+// (e.g. the rep card + routed form for members, the Cognito form for visitors).
+function ur_rep_login_should_render($should_render, $element) {
+    if (!$should_render || !is_object($element) || !method_exists($element, 'get_settings')) return $should_render;
+    if (\Elementor\Plugin::$instance->editor->is_edit_mode() || \Elementor\Plugin::$instance->preview->is_preview_mode()) return $should_render;
+    $classes = ' ' . (string) $element->get_settings('_css_classes') . ' ' . (string) $element->get_settings('css_classes') . ' ';
+    if (strpos($classes, ' ur-logged-in-only ') !== false) return is_user_logged_in();
+    if (strpos($classes, ' ur-logged-out-only ') !== false) return !is_user_logged_in();
+    return $should_render;
+}
+add_action('elementor/init', function () {
+    foreach (['widget', 'section', 'column', 'container'] as $type) {
+        add_filter("elementor/frontend/{$type}/should_render", 'ur_rep_login_should_render', 10, 2);
+    }
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Elementor Pro form routing (form name = setting "form_name")
@@ -570,7 +605,11 @@ function ur_rep_plan_from_cognito(array $rows) {
     }
     foreach ($new['unit_departments'] as $u => $dept) {
         $div = ur_rep_division_for_unit($u);
-        if (!isset($new['departments'][$div][ur_rep_norm_dept($dept)])) $report['notes'][] = 'Unit ' . $u . ' is mapped to department "' . $dept . '", which has no rep in the list.';
+        $dk = ur_rep_norm_dept($dept);
+        if (isset($new['departments'][$div][$dk])) continue;
+        $by_unit = [];
+        foreach ($new['unit_departments'] as $u2 => $d2) if (ur_rep_norm_dept($d2) === $dk && !empty($new['units'][$u2]['rep'])) $by_unit[$new['units'][$u2]['rep']] = true;
+        if (count($by_unit) !== 1) $report['notes'][] = 'Unit ' . $u . ' is mapped to department "' . $dept . '", which has no rep in the list (goes to the Division Director).';
     }
     // 5. Units with members and no rep after the change.
     $orphans = [];
