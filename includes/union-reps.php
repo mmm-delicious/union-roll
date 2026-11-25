@@ -255,7 +255,9 @@ function ur_rep_is_our_form($record) {
 function ur_rep_route() {
     static $route = null;
     if ($route !== null) return $route;
-    $uid = get_current_user_id();
+    $real = get_current_user_id();
+    // An admin using "View as member" is routed as that member, but always in test mode (see below).
+    $uid = function_exists('ur_mg_effective_user_id') ? (int) ur_mg_effective_user_id() : $real;
     $user = $uid ? get_userdata($uid) : null;
     if (!$user) return $route = [];
     $ctx = ur_rep_for_user($uid);
@@ -267,6 +269,7 @@ function ur_rep_route() {
     if (strcasecmp($to, $bcc) === 0) $bcc = '';
     $phone = (string) get_user_meta($uid, 'phone1', true);
     return $route = [
+        'preview'  => $uid !== $real,
         'user'     => $user,
         'ctx'      => $ctx,
         'to'       => sanitize_email($to),
@@ -297,7 +300,7 @@ add_filter('elementor_pro/forms/record/actions_before', function ($record, $ajax
     if (!ur_rep_is_our_form($record) || !is_user_logged_in()) return $record;
     $r = ur_rep_route();
     if (!$r) return $record;
-    $vals = $r['member'] + ['routed_to' => $r['to'] . ($r['bcc'] ? ' (BCC ' . $r['bcc'] . ')' : '') . (ur_rep_settings()['test_mode'] ? ' [TEST MODE]' : '')];
+    $vals = $r['member'] + ['routed_to' => $r['to'] . ($r['bcc'] ? ' (BCC ' . $r['bcc'] . ')' : '') . ((ur_rep_settings()['test_mode'] || $r['preview']) ? ' [TEST MODE]' : '')];
     foreach ($vals as $id => $v) {
         $record->update_field($id, 'value', $v);
         $record->update_field($id, 'raw_value', $v);
@@ -325,8 +328,8 @@ add_filter('elementor_pro/forms/wp_mail_fields', function ($fields, $record) {
     $br = $html ? '<br>' : "\n";
     $fields['email_content'] = implode($br, $lines) . $br . $fields['email_content'];
 
-    if (!empty($s['test_mode'])) {
-        $test = sanitize_email($s['test_recipient']);
+    if (!empty($s['test_mode']) || !empty($r['preview'])) {
+        $test = sanitize_email($s['test_recipient']) ?: wp_get_current_user()->user_email;
         $fields['email_subject'] = '[TEST → ' . $r['to'] . ($r['bcc'] ? ', BCC ' . $r['bcc'] : '') . '] ' . $fields['email_subject'];
         $fields['email_to'] = $test ?: get_option('admin_email');
         $fields['email_to_cc'] = '';
@@ -614,7 +617,7 @@ function ur_rep_plan_from_cognito(array $rows) {
     // 5. Units with members and no rep after the change.
     $orphans = [];
     foreach ($counts as $u => $n) {
-        if (isset($new['units'][$u]) || isset($new['unit_departments'][$u]) || preg_match('/^\d(48|49|98|99)$/', $u) || in_array($u, ['529', '597', '650'], true)) continue;
+        if (isset($new['units'][$u]) || isset($new['unit_departments'][$u]) || preg_match('/^\d(48|49|98|99)$/', (string) $u) || in_array((string) $u, ['529', '597', '650'], true)) continue;
         $orphans[] = $u . ' (' . $n . ')';
     }
     if ($orphans) $report['notes'][] = 'Units with members but no rep (messages go to the Division Director): ' . implode(', ', $orphans);
@@ -677,7 +680,7 @@ function ur_rep_plan_from_docx(array $parsed) {
     foreach ($counts as $u => $n) {
         if (isset($new['units'][$u])) continue;
         $udiv = ur_rep_division_for_unit($u);
-        if ($udiv === $div && !preg_match('/^\d(48|49|98|99)$/', $u)) $report['notes'][] = 'Unit ' . $u . ' has ' . $n . ' member(s) but no rep in this list (messages go to the Division Director).';
+        if ($udiv === $div && !preg_match('/^\d(48|49|98|99)$/', (string) $u)) $report['notes'][] = 'Unit ' . $u . ' has ' . $n . ' member(s) but no rep in this list (messages go to the Division Director).';
     }
     $new['divisions'][$div] = ['effective' => $parsed['effective'], 'source' => 'docx', 'updated' => current_time('mysql')];
     return [$new, $report];
