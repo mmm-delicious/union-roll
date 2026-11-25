@@ -4,7 +4,7 @@ Tags: union, membership, member access, check-in, qr code
 Requires at least: 5.0
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 3.25.5
+Stable tag: 3.25.6
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -19,6 +19,9 @@ UnionRoll is a membership management toolkit for unions:
 * Union Reps: each member sees their Union Representative, and the contact form routes to that rep with the Division Director on BCC. Assignments are updated by uploading the Cognito export.
 
 == Changelog ==
+
+= 3.25.6 =
+* Union Reps: staff and admin accounts no longer see a rep card (in For You or [ur_my_rep]); they get a note to use View as member instead.
 
 = 3.25.5 =
 * Speed: member-group rules load in one query instead of one per group (27 queries / ~36 ms per logged-in page down to 2).

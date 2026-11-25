@@ -737,7 +737,7 @@ add_shortcode('ur_for_you', function ($atts) {
         $html .= '<div class="ur-fy-member-card"><span><strong>Your membership card</strong>Show your QR code to check in at union meetings and events.</span>'
             . '<a href="' . esc_url($card) . '">Open my card</a></div>';
     }
-    if (function_exists('ur_rep_for_user')) {
+    if (function_exists('ur_rep_for_user') && !ur_rep_viewer_is_staff()) {
         $contact = get_page_by_path('contact-my-union-representative');
         $html .= ur_rep_card_html(ur_rep_for_user(), $contact ? get_permalink($contact) . '#contact-my-rep' : '');
     }

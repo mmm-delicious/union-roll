@@ -145,6 +145,11 @@ function ur_rep_for_department($division, $dept) {
     return count($reps) === 1 ? (string) key($reps) : '';
 }
 
+/** Staff/admins (and not previewing a member) have no rep of their own. */
+function ur_rep_viewer_is_staff() {
+    return function_exists('ur_mg_user_context') && !empty(ur_mg_user_context()['staff']);
+}
+
 function ur_rep_phone_link($phone) {
     // "(808) 847-2631 ext. 244" -> tel:+18088472631,244
     if (!preg_match('/\(?(\d{3})\)?[\s.-]*(\d{3})[\s.-]*(\d{4})(?:\s*(?:ext\.?|x)\s*(\d+))?/i', (string) $phone, $m)) return '';
@@ -211,6 +216,9 @@ add_shortcode('ur_my_rep', function ($atts) {
         $login = function_exists('wpmem_login_url') ? wpmem_login_url(get_permalink()) : wp_login_url(get_permalink());
         return ur_rep_card_css() . '<p style="font-family:Poppins,sans-serif">Log in to see your Union Representative and send them a message. '
             . '<a href="' . esc_url($login) . '">Log in</a></p>' . ur_rep_offices_html();
+    }
+    if (ur_rep_viewer_is_staff()) {
+        return ur_rep_card_css() . '<p style="font-family:Poppins,sans-serif">Staff accounts don\'t have an assigned Union Representative. To see what a member sees, use <strong>View as member</strong> in the admin bar.</p>' . ur_rep_offices_html();
     }
     $ctx = ur_rep_for_user();
     $card = ur_rep_card_html($ctx, $atts['form']);
