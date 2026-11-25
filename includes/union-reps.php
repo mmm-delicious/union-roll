@@ -145,6 +145,27 @@ function ur_rep_for_department($division, $dept) {
     return count($reps) === 1 ? (string) key($reps) : '';
 }
 
+/**
+ * Link for the card's "Send a message" button: the first published page that holds the routed
+ * Elementor form (by form name). '' when no live page has it yet, so the button is hidden instead
+ * of sending members to an old form. Cached; cleared whenever a page is saved.
+ */
+function ur_rep_contact_url() {
+    $id = get_transient('ur_rep_contact_page');
+    if ($id === false) {
+        global $wpdb;
+        $name = '"form_name":"' . str_replace('"', '\\"', ur_rep_settings()['form_name']) . '"';
+        $id = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT p.ID FROM {$wpdb->posts} p INNER JOIN {$wpdb->postmeta} m ON m.post_id = p.ID AND m.meta_key = '_elementor_data'
+             WHERE p.post_type = 'page' AND p.post_status = 'publish' AND m.meta_value LIKE %s ORDER BY p.ID LIMIT 1",
+            '%' . $wpdb->esc_like($name) . '%'
+        ));
+        set_transient('ur_rep_contact_page', $id, DAY_IN_SECONDS);
+    }
+    return $id ? get_permalink((int) $id) . '#contact-my-rep' : '';
+}
+add_action('save_post_page', function () { delete_transient('ur_rep_contact_page'); });
+
 /** Staff/admins (and not previewing a member) have no rep of their own. */
 function ur_rep_viewer_is_staff() {
     return function_exists('ur_mg_user_context') && !empty(ur_mg_user_context()['staff']);

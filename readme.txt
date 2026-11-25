@@ -4,7 +4,7 @@ Tags: union, membership, member access, check-in, qr code
 Requires at least: 5.0
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 3.25.7
+Stable tag: 3.25.8
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -19,6 +19,9 @@ UnionRoll is a membership management toolkit for unions:
 * Union Reps: each member sees their Union Representative, and the contact form routes to that rep with the Division Director on BCC. Assignments are updated by uploading the Cognito export.
 
 == Changelog ==
+
+= 3.25.8 =
+* Union Reps: the rep card's "Send a message" button links to the published page that holds the routed Elementor form, and is hidden until such a page exists (it no longer sends members to the old Cognito page).
 
 = 3.25.7 =
 * For You: greets the member by first name ("Welcome, Name") under a small gold "For You" label.
