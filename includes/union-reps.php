@@ -322,6 +322,8 @@ add_filter('elementor_pro/forms/render/item', function ($item, $index, $form) {
         'contact_phone' => (string) get_user_meta($uid, 'phone1', true),
     ];
     $item['field_value'] = $vals[$id];
+    // Elementor builds the input's attributes before this filter runs, so set the value attribute directly.
+    if ($vals[$id] !== '' && method_exists($form, 'set_render_attribute')) $form->set_render_attribute('input' . $index, 'value', $vals[$id]);
     return $item;
 }, 10, 3);
 
