@@ -2,7 +2,7 @@
 /**
  * Plugin Name: UnionRoll
  * Description: A powerful union membership management plugin: member cards and QR event check-in, member-group content access, and Union Rep assignments with routed contact forms.
- * Version: 3.25.4
+ * Version: 3.25.5
  * Author: MMM Delicious
  * Developer: Mark McDonnell
  * Requires at least: 5.0
@@ -24,7 +24,7 @@ $mmm_eci_updater->setBranch('main');
 $mmm_eci_updater->scheduler->checkPeriod = 48; // setCheckPeriod() not available in bundled PUC v5p6
 
 // Constants
-define('MMM_ECI_VERSION', '3.25.4');
+define('MMM_ECI_VERSION', '3.25.5');
 define('MMM_ECI_PATH', plugin_dir_path(__FILE__));
 define('MMM_ECI_URL', plugin_dir_url(__FILE__));
 
@@ -33,6 +33,13 @@ require_once MMM_ECI_PATH . 'includes/class-qr-generator.php';
 require_once MMM_ECI_PATH . 'includes/shortcodes.php';
 require_once MMM_ECI_PATH . 'includes/member-groups.php';
 require_once MMM_ECI_PATH . 'includes/union-reps.php';
+
+// Keep at most 10 revisions per post/page (wp-config sets 250, which bloated the database with
+// multi-megabyte Elementor copies). Change with the ur_revisions_to_keep option.
+add_filter('wp_revisions_to_keep', function ($num) {
+    $keep = (int) get_option('ur_revisions_to_keep', 10);
+    return ($num < 0 || $num > $keep) ? $keep : $num;
+}, 20);
 require_once MMM_ECI_PATH . 'admin/class-admin-menu.php';
 require_once MMM_ECI_PATH . 'admin/page-events.php';
 

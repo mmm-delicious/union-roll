@@ -220,12 +220,7 @@ add_shortcode('ur_my_rep', function ($atts) {
     return $card;
 });
 
-// The card and the logged-out text differ per viewer: never serve them from Elementor's element cache.
-add_filter('elementor/element/is_dynamic_content', function ($is_dynamic, $raw_data) {
-    if ($is_dynamic) return $is_dynamic;
-    $json = (string) wp_json_encode($raw_data['settings'] ?? []);
-    return strpos($json, 'ur_my_rep') !== false || strpos($json, 'ur-logged-in-only') !== false || strpos($json, 'ur-logged-out-only') !== false;
-}, 11, 2);
+// Element-cache exclusion for [ur_my_rep] and the ur-logged-in/out-only classes lives in member-groups.php (one pass).
 
 // Elementor elements with CSS class "ur-logged-in-only" / "ur-logged-out-only" show only to that audience
 // (e.g. the rep card + routed form for members, the Cognito form for visitors).

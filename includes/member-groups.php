@@ -130,6 +130,8 @@ function ur_mg_groups($refresh = false) {
          WHERE tt.taxonomy = %s ORDER BY t.name",
         UR_MG_TAX
     ));
+    // Load every group's rules in one query instead of one query per group.
+    if ($rows) update_termmeta_cache(array_map(function ($t) { return (int) $t->term_id; }, $rows));
     foreach ((array) $rows as $t) {
         $tid = (int) $t->term_id;
         $groups[$tid] = [
@@ -574,7 +576,8 @@ add_filter('elementor/element/is_dynamic_content', function ($is_dynamic, $raw_d
     $classes = (string) ($s['_css_classes'] ?? '') . ' ' . (string) ($s['css_classes'] ?? '');
     if (strpos($classes, 'ur-group-') !== false) return true;
     $json = (string) wp_json_encode($s);
-    foreach (['ur_group_only', 'wpmem_file', 'ur_for_you', 'ur_my_division', 'a=download'] as $needle) {
+    if (preg_match('/(?:^|\s)ur-logged-(?:in|out)-only(?:\s|$)/', $classes)) return true;
+    foreach (['ur_group_only', 'wpmem_file', 'ur_for_you', 'ur_my_rep', 'a=download'] as $needle) {
         if (strpos($json, $needle) !== false) return true;
     }
     return false;
@@ -748,71 +751,6 @@ add_shortcode('ur_for_you', function ($atts) {
         $html .= '</ul></div>';
     }
     return $html . '</div></section>';
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// [ur_my_division] — "All events / My division" toggle for event calendars.
-// "My division" = the member's division category PLUS every event with no division
-// category (statewide events like the Labor Day picnic always stay visible).
-// ─────────────────────────────────────────────────────────────────────────────
-
-const UR_MG_DIVISION_CATS = ['oahu-division', 'hawaii-division', 'kauai-division', 'maui-division', 'private-sector-division'];
-
-function ur_mg_user_divisions($user_id = null) {
-    $user_id = ($user_id === null) ? ur_mg_effective_user_id() : (int) $user_id;
-    if (!$user_id) return [];
-    $map = ['oahu' => 'oahu-division', 'hawaii' => 'hawaii-division', 'kauai' => 'kauai-division', 'maui' => 'maui-division', 'molokai' => 'maui-division', 'lanai' => 'maui-division'];
-    $out = [];
-    $isl = strtolower(trim((string) get_user_meta($user_id, 'island', true)));
-    if (isset($map[$isl])) $out[] = $map[$isl];
-    $unit = trim((string) get_user_meta($user_id, 'unit_number', true));
-    if (ur_mg_norm_bu(get_user_meta($user_id, 'bargaining_unit', true)) === '0' || (ctype_digit($unit) && (int) $unit >= 501 && (int) $unit <= 554)) {
-        $out[] = 'private-sector-division';
-    }
-    return array_values(array_unique(array_filter($out, function ($slug) { return (bool) get_term_by('slug', $slug, 'tribe_events_cat'); })));
-}
-
-/** Event IDs to hide for "My division": in another division's category and not in the member's own. */
-function ur_mg_division_excluded_ids() {
-    static $cache = [];
-    $mine = ur_mg_user_divisions();
-    $ck   = implode(',', $mine);
-    if (isset($cache[$ck])) return $cache[$ck];
-    if (!$mine) return $cache[$ck] = [];
-    $ids = function ($slugs) {
-        $tids = [];
-        foreach ($slugs as $slug) {
-            $t = get_term_by('slug', $slug, 'tribe_events_cat');
-            if ($t) $tids[] = (int) $t->term_id;
-        }
-        return $tids ? array_map('intval', (array) get_objects_in_term($tids, 'tribe_events_cat')) : [];
-    };
-    $others = array_values(array_diff(UR_MG_DIVISION_CATS, $mine));
-    return $cache[$ck] = array_values(array_diff($ids($others), $ids($mine)));
-}
-
-add_action('pre_get_posts', function (WP_Query $q) {
-    if (($_GET['ur_division'] ?? '') !== 'mine' || (is_admin() && !wp_doing_ajax())) return;
-    if (!in_array('tribe_events', (array) $q->get('post_type'), true)) return;
-    $exclude = ur_mg_division_excluded_ids();
-    if (!$exclude) return;
-    $q->set('post__not_in', array_values(array_unique(array_merge((array) $q->get('post__not_in'), $exclude))));
-}, 1000);
-
-add_shortcode('ur_my_division', function () {
-    if (!is_user_logged_in()) return '';
-    $mine = ur_mg_user_divisions();
-    if (!$mine) return '';
-    $names = array_map(function ($slug) { $t = get_term_by('slug', $slug, 'tribe_events_cat'); return $t ? $t->name : $slug; }, $mine);
-    $on    = ($_GET['ur_division'] ?? '') === 'mine';
-    $base  = remove_query_arg('ur_division');
-    $btn   = function ($label, $url, $active) {
-        return '<a href="' . esc_url($url) . '" style="display:inline-block;padding:8px 16px;border-radius:20px;text-decoration:none;border:2px solid var(--e-global-color-primary,#1f3a68);'
-            . ($active ? 'background:var(--e-global-color-primary,#1f3a68);color:#fff' : 'color:var(--e-global-color-primary,#1f3a68)') . '">' . esc_html($label) . '</a>';
-    };
-    return '<div class="ur-my-division" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 16px">'
-        . '<span>Show:</span>' . $btn('All events', $base, !$on) . $btn('My division (' . implode(' + ', $names) . ')', add_query_arg('ur_division', 'mine', $base), $on)
-        . '<small style="opacity:.7">My division still includes statewide events.</small></div>';
 });
 
 // Elementor Posts / Loop Grid with Query ID "ur_for_me": only content tagged for the member's groups.
