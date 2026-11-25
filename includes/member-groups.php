@@ -694,7 +694,7 @@ add_shortcode('ur_for_you', function ($atts) {
     if (!$has && !$card) return '';
     $cols = ['contracts' => 'Your contracts', 'news' => 'News for your unit', 'events' => 'Your upcoming meetings'];
     // Matches the site's Elementor look: navy cards (primary #1C244B), white headings,
-    // light text, white links with a gold (#D3C89D) hover, gold buttons with navy text.
+    // light text, white links with a gold (#D3C89D) hover, gold buttons with white text (hover: white with gold text).
     $html = '<style>.ur-for-you{max-width:1140px;margin:0 auto;padding:40px 20px}.ur-for-you h2{margin:0 0 6px;color:var(--e-global-color-primary,#1C244B)}.ur-for-you .ur-fy-sub{margin:0 0 22px;color:var(--e-global-color-text,#324A6D)}'
         . '.ur-fy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px}'
         . '.ur-for-you .ur-fy-card{background:var(--e-global-color-primary,#1C244B);color:#F3F5F8;border-top:4px solid #D3C89D;border-radius:6px;padding:20px 22px}'
@@ -703,8 +703,8 @@ add_shortcode('ur_for_you', function ($atts) {
         . '.ur-for-you .ur-fy-card a{color:#fff;font-weight:600;text-decoration:none}.ur-for-you .ur-fy-card a:hover,.ur-for-you .ur-fy-card a:focus{color:#D3C89D;text-decoration:underline}'
         . '.ur-for-you .ur-fy-member-card{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:0 0 20px;padding:18px 22px;border-radius:6px;background:#11274A;color:#F3F5F8;border-left:4px solid #D3C89D}'
         . '.ur-for-you .ur-fy-member-card strong{display:block;font-size:1.1em;color:#fff}'
-        . '.ur-for-you .ur-fy-member-card a{background:#D3C89D;color:#1C244B;padding:10px 22px;border-radius:4px;text-decoration:none;font-weight:700;white-space:nowrap}'
-        . '.ur-for-you .ur-fy-member-card a:hover,.ur-for-you .ur-fy-member-card a:focus{background:#fff;color:#1C244B}</style>';
+        . '.ur-for-you .ur-fy-member-card a{background:#D3C89D;color:#fff;padding:10px 22px;border-radius:4px;text-decoration:none;font-weight:700;white-space:nowrap}'
+        . '.ur-for-you .ur-fy-member-card a:hover,.ur-for-you .ur-fy-member-card a:focus{background:#fff;color:#D3C89D}</style>';
     $html .= '<section id="for-you" class="ur-for-you"><h2>' . esc_html($atts['title']) . '</h2>'
         . ($has ? '<p class="ur-fy-sub">Contracts, news and meetings for your unit and division.</p>' : '');
     if ($card) {
