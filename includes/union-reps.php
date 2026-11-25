@@ -5,7 +5,7 @@
  *
  * Data (one option, `ur_rep_data`):
  *   reps      [slug => name, title, email, phone, photo (attachment id), division, role (rep|director|other)]
- *   units     [unit => [rep => slug, division => 'Oahu', temporary => bool]]
+ *   units     [unit => [rep => slug, division => 'Oahu']]
  *   divisions [division => [effective, source, updated]]
  * The previous version is kept in `ur_rep_data_prev` for one-click undo.
  *
@@ -75,7 +75,6 @@ function ur_rep_settings() {
         'test_mode'      => 1,
         'test_recipient' => '',
         'fallback_email' => '',
-        'show_temporary' => 0,
     ];
 }
 
@@ -104,7 +103,7 @@ function ur_rep_director($division) {
 
 /**
  * The member's rep context. $user_id null = the viewer (honours the admin "view as member" preview).
- * @return array{unit:string,division:string,rep:?array,director:?array,temporary:bool}
+ * @return array{unit:string,division:string,rep:?array,director:?array}
  */
 function ur_rep_for_user($user_id = null) {
     if ($user_id === null) {
@@ -119,7 +118,7 @@ function ur_rep_for_user($user_id = null) {
         // else the unit's department, then that department's rep.
         $dept = trim((string) get_user_meta((int) $user_id, 'ur_department', true)) ?: (string) ($d['unit_departments'][$unit] ?? '');
         $slug = $dept !== '' ? ur_rep_for_department($division, $dept) : '';
-        if ($slug) $a = ['rep' => $slug, 'division' => $division, 'temporary' => false];
+        if ($slug) $a = ['rep' => $slug, 'division' => $division];
     }
     $rep = ($a && isset($d['reps'][$a['rep']])) ? $d['reps'][$a['rep']] + ['slug' => $a['rep']] : null;
     return [
@@ -127,7 +126,6 @@ function ur_rep_for_user($user_id = null) {
         'division'  => $division,
         'rep'       => $rep,
         'director'  => $division ? ur_rep_director($division) : null,
-        'temporary' => !empty($a['temporary']),
     ];
 }
 
@@ -223,7 +221,6 @@ function ur_rep_card_html($ctx, $form_anchor = '#contact-my-rep') {
     if (!empty($person['phone'])) $lines[] = '<a href="' . esc_url(ur_rep_phone_link($person['phone'])) . '">' . esc_html($person['phone']) . '</a>';
     if ($ctx['unit'] !== '') $lines[] = 'Unit ' . esc_html($ctx['unit']) . ($ctx['division'] ? ' · ' . esc_html($ctx['division']) . ' Division' : '');
     $title = $person['title'] ?? '';
-    if ($ctx['rep'] && $ctx['temporary'] && !empty($s['show_temporary'])) $title .= ' (temporary)';
     return ur_rep_card_css() . '<div class="ur-rep-card">' . $img . '<div class="ur-rep-body">'
         . '<p class="ur-rep-kicker">' . esc_html($kicker) . '</p><h3>' . esc_html($person['name']) . '</h3>'
         . ($title ? '<p class="ur-rep-title">' . esc_html($title) . '</p>' : '')
@@ -529,10 +526,10 @@ function ur_rep_parse_docx($path) {
             continue;
         }
         if ($bold) {
-            $temporary = (bool) preg_match('/[-–]\s*temporary\s*$/i', $text);
+            // A "- Temporary" note after the name is ignored.
             $name = trim(preg_replace('/\s*[-–]\s*temporary\s*$/i', '', $text));
             $cur = ur_rep_norm_name($name);
-            $out['reps'][$cur] = ['name' => $name, 'temporary' => $temporary, 'units' => []];
+            $out['reps'][$cur] = ['name' => $name, 'units' => []];
             continue;
         }
         $out['warnings'][] = 'Line not understood (skipped): "' . $text . '"';
@@ -691,7 +688,7 @@ function ur_rep_plan_from_cognito(array $rows) {
                     continue;
                 }
                 if ($known && !isset($known[$r['unit']])) $report['notes'][] = 'Unit ' . $r['unit'] . ' (' . $r['unit_name'] . ') is not in the website\'s unit list.';
-                $units[$r['unit']] = ['rep' => $r['key'], 'division' => $div, 'temporary' => false];
+                $units[$r['unit']] = ['rep' => $r['key'], 'division' => $div];
             } elseif ($r['unit_name'] !== '') {
                 $depts[ur_rep_norm_dept($r['unit_name'])] = ['name' => $r['unit_name'], 'rep' => $r['key']];
             }
@@ -792,7 +789,7 @@ function ur_rep_plan_from_docx(array $parsed) {
             $seen[$u] = $rep['name'];
             if ($known && !isset($known[$u])) $report['notes'][] = 'Unit ' . $u . ' (' . $label . ') is not in the website\'s unit list.';
             $old = $d['units'][$u]['rep'] ?? '';
-            $new['units'][$u] = ['rep' => $slug, 'division' => $div, 'temporary' => !empty($rep['temporary'])];
+            $new['units'][$u] = ['rep' => $slug, 'division' => $div];
             if ($old !== $slug) {
                 $report['changes'][] = 'Unit ' . $u . ' ' . $label . ': ' . ($old ? ($d['reps'][$old]['name'] ?? $old) : '(none)') . ' → ' . $rep['name'] . ' · ' . (int) ($counts[$u] ?? 0) . ' members';
             }
@@ -941,7 +938,6 @@ function ur_rep_handle_post() {
             'test_mode' => empty($_POST['test_mode']) ? 0 : 1,
             'test_recipient' => sanitize_email(wp_unslash($_POST['test_recipient'] ?? '')),
             'fallback_email' => sanitize_email(wp_unslash($_POST['fallback_email'] ?? '')),
-            'show_temporary' => empty($_POST['show_temporary']) ? 0 : 1,
         ], false);
         return 'Settings saved.';
     }
@@ -1032,6 +1028,5 @@ function ur_rep_render_admin() {
     echo '<tr><th>Test mode</th><td><label><input type="checkbox" name="test_mode" value="1"' . checked($s['test_mode'], 1, false) . '> Send every message only to the test address</label></td></tr>';
     echo '<tr><th>Test address</th><td><input name="test_recipient" value="' . esc_attr($s['test_recipient']) . '" class="regular-text"></td></tr>';
     echo '<tr><th>Fallback address</th><td><input name="fallback_email" value="' . esc_attr($s['fallback_email']) . '" class="regular-text"><p class="description">Used only when a member has no rep and no Division Director (e.g. no unit on file).</p></td></tr>';
-    echo '<tr><th>Show "temporary"</th><td><label><input type="checkbox" name="show_temporary" value="1"' . checked($s['show_temporary'], 1, false) . '> Show "(temporary)" next to temporary reps on the member card</label></td></tr>';
     echo '</table><p><button class="button button-primary">Save settings</button></p></form></div>';
 }
