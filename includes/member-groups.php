@@ -693,13 +693,18 @@ add_shortcode('ur_for_you', function ($atts) {
     $has   = $items && array_filter($items);
     if (!$has && !$card) return '';
     $cols = ['contracts' => 'Your contracts', 'news' => 'News for your unit', 'events' => 'Your upcoming meetings'];
-    $html = '<style>.ur-for-you{max-width:1140px;margin:0 auto;padding:40px 20px}.ur-for-you h2{margin:0 0 6px}.ur-for-you .ur-fy-sub{margin:0 0 22px;opacity:.8}'
+    // Matches the site's Elementor look: navy cards (primary #1C244B), white headings,
+    // light text, white links with a gold (#D3C89D) hover, gold buttons with navy text.
+    $html = '<style>.ur-for-you{max-width:1140px;margin:0 auto;padding:40px 20px}.ur-for-you h2{margin:0 0 6px;color:var(--e-global-color-primary,#1C244B)}.ur-for-you .ur-fy-sub{margin:0 0 22px;color:var(--e-global-color-text,#324A6D)}'
         . '.ur-fy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px}'
-        . '.ur-fy-card{background:#fff;border:1px solid rgba(0,0,0,.08);border-top:4px solid var(--e-global-color-primary,#1f3a68);border-radius:6px;padding:18px 20px}'
-        . '.ur-fy-card h3{font-size:1.05em;margin:0 0 10px}.ur-fy-card ul{list-style:none;margin:0;padding:0}.ur-fy-card li{padding:8px 0;border-top:1px solid rgba(0,0,0,.06)}'
-        . '.ur-fy-card li:first-child{border-top:0}.ur-fy-card small{display:block;opacity:.7}'
-        . '.ur-fy-member-card{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:0 0 20px;padding:16px 20px;border-radius:6px;background:var(--e-global-color-primary,#1f3a68);color:#fff}'
-        . '.ur-fy-member-card strong{display:block;font-size:1.1em}.ur-fy-member-card a{background:#fff;color:var(--e-global-color-primary,#1f3a68);padding:10px 20px;border-radius:4px;text-decoration:none;font-weight:600;white-space:nowrap}</style>';
+        . '.ur-for-you .ur-fy-card{background:var(--e-global-color-primary,#1C244B);color:#F3F5F8;border-top:4px solid #D3C89D;border-radius:6px;padding:20px 22px}'
+        . '.ur-for-you .ur-fy-card h3{font-size:1.1em;margin:0 0 10px;color:#fff}.ur-fy-card ul{list-style:none;margin:0;padding:0}.ur-fy-card li{padding:10px 0;border-top:1px solid rgba(255,255,255,.15)}'
+        . '.ur-fy-card li:first-child{border-top:0}.ur-for-you .ur-fy-card small{display:block;margin-top:2px;color:#C8D5DC}'
+        . '.ur-for-you .ur-fy-card a{color:#fff;font-weight:600;text-decoration:none}.ur-for-you .ur-fy-card a:hover,.ur-for-you .ur-fy-card a:focus{color:#D3C89D;text-decoration:underline}'
+        . '.ur-for-you .ur-fy-member-card{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:0 0 20px;padding:18px 22px;border-radius:6px;background:#11274A;color:#F3F5F8;border-left:4px solid #D3C89D}'
+        . '.ur-for-you .ur-fy-member-card strong{display:block;font-size:1.1em;color:#fff}'
+        . '.ur-for-you .ur-fy-member-card a{background:#D3C89D;color:#1C244B;padding:10px 22px;border-radius:4px;text-decoration:none;font-weight:700;white-space:nowrap}'
+        . '.ur-for-you .ur-fy-member-card a:hover,.ur-for-you .ur-fy-member-card a:focus{background:#fff;color:#1C244B}</style>';
     $html .= '<section id="for-you" class="ur-for-you"><h2>' . esc_html($atts['title']) . '</h2>'
         . ($has ? '<p class="ur-fy-sub">Contracts, news and meetings for your unit and division.</p>' : '');
     if ($card) {
