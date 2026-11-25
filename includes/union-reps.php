@@ -307,6 +307,30 @@ function ur_rep_route() {
     ];
 }
 
+// Pre-fill the member's own contact details in the visible, editable fields (contact_name,
+// contact_email, contact_phone). The section is logged-in-only, so it is rendered per request.
+add_filter('elementor_pro/forms/render/item', function ($item, $index, $form) {
+    if (!is_user_logged_in() || !is_object($form) || trim((string) $form->get_settings('form_name')) !== trim(ur_rep_settings()['form_name'])) return $item;
+    $id = $item['custom_id'] ?? '';
+    if (!in_array($id, ['contact_name', 'contact_email', 'contact_phone'], true) || (string) ($item['field_value'] ?? '') !== '') return $item;
+    $uid = function_exists('ur_mg_effective_user_id') ? (int) ur_mg_effective_user_id() : get_current_user_id();
+    $u = get_userdata($uid);
+    if (!$u) return $item;
+    $vals = [
+        'contact_name'  => trim($u->first_name . ' ' . $u->last_name) ?: $u->display_name,
+        'contact_email' => $u->user_email,
+        'contact_phone' => (string) get_user_meta($uid, 'phone1', true),
+    ];
+    $item['field_value'] = $vals[$id];
+    return $item;
+}, 10, 3);
+
+/** A submitted field's value from the record ('' if the form has no such field). */
+function ur_rep_field($record, $id) {
+    $fields = (array) $record->get('fields');
+    return trim((string) ($fields[$id]['value'] ?? ''));
+}
+
 add_action('elementor_pro/forms/validation', function ($record, $ajax_handler) {
     if (!ur_rep_is_our_form($record)) return;
     if (!is_user_logged_in()) {
@@ -316,7 +340,16 @@ add_action('elementor_pro/forms/validation', function ($record, $ajax_handler) {
     $r = ur_rep_route();
     if (empty($r['to'])) {
         $ajax_handler->add_error_message('We couldn\'t find a representative for your unit. Please call your division office.');
+        return;
     }
+    $best  = strtolower(ur_rep_field($record, 'best_contact'));
+    $email = ur_rep_field($record, 'contact_email');
+    $phone = ur_rep_field($record, 'contact_phone');
+    if ($email !== '' && !is_email($email)) $ajax_handler->add_error('contact_email', 'Please enter a valid email address.');
+    if ((strpos($best, 'phone') !== false || strpos($best, 'text') !== false) && preg_replace('/\D/', '', $phone) === '') {
+        $ajax_handler->add_error('contact_phone', 'Please add a phone number so your rep can call or text you.');
+    }
+    if (strpos($best, 'email') !== false && $email === '') $ajax_handler->add_error('contact_email', 'Please add an email address so your rep can write back.');
 }, 10, 2);
 
 // Fill the audit fields (if the form has them) from the account, overwriting anything posted.
@@ -336,18 +369,40 @@ add_filter('elementor_pro/forms/wp_mail_fields', function ($fields, $record) {
     if (!ur_rep_is_our_form($record) || !is_user_logged_in()) return $fields;
     $r = ur_rep_route();
     if (!$r || empty($r['to'])) return $fields;
-    // Leave a second "confirmation to the member" email action alone.
-    if (strcasecmp(trim($fields['email_to']), $r['member']['member_email']) === 0) return $fields;
-
     $s = ur_rep_settings();
+    // The member's copy (Elementor "Email 2" action, To = [field id="contact_email"]).
+    $copy_to = trim((string) $fields['email_to']);
+    $typed = ur_rep_field($record, 'contact_email');
+    if (strcasecmp($copy_to, $r['member']['member_email']) === 0 || ($typed !== '' && strcasecmp($copy_to, $typed) === 0)) {
+        if (!is_email($copy_to)) $copy_to = $r['member']['member_email'];
+        $fields['email_to'] = $copy_to;
+        $fields['email_to_cc'] = '';
+        $fields['email_to_bcc'] = '';
+        if (!empty($s['test_mode']) || !empty($r['preview'])) {
+            $fields['email_subject'] = '[TEST copy → ' . $copy_to . '] ' . $fields['email_subject'];
+            $fields['email_to'] = sanitize_email($s['test_recipient']) ?: wp_get_current_user()->user_email;
+        }
+        $GLOBALS['ur_rep_reply_to'] = $r['to']; // the member can reply straight to their rep
+        return $fields;
+    }
+
     $m = $r['member'];
     $html = strpos((string) $fields['email_content'], '<br>') !== false;
+    $c_name  = ur_rep_field($record, 'contact_name') ?: $m['member_name'];
+    $c_email = ur_rep_field($record, 'contact_email');
+    $c_phone = ur_rep_field($record, 'contact_phone');
+    $best    = ur_rep_field($record, 'best_contact');
+    if ($c_email === '' || !is_email($c_email)) $c_email = $m['member_email'];
+    if ($c_phone === '') $c_phone = $m['member_phone'];
     $lines = [
-        'Message from ' . $m['member_name'] . ' (unit ' . ($m['member_unit'] ?: 'unknown') . ')',
-        'Email: ' . $m['member_email'] . ($m['member_phone'] ? ' · Phone: ' . $m['member_phone'] : ''),
-        'Reply to this email to answer the member directly.',
-        '---',
+        'Message from ' . $c_name . ' (unit ' . ($m['member_unit'] ?: 'unknown') . ')',
+        ($best !== '' ? 'Best way to reach them: ' . $best . ' · ' : '') . 'Email: ' . $c_email . ($c_phone ? ' · Phone: ' . $c_phone : ''),
     ];
+    if (strcasecmp($c_email, $m['member_email']) !== 0 || ($m['member_phone'] && $c_phone !== $m['member_phone'])) {
+        $lines[] = 'On their website account: ' . $m['member_email'] . ($m['member_phone'] ? ' · ' . $m['member_phone'] : '');
+    }
+    $lines[] = 'Reply to this email to answer the member directly.';
+    $lines[] = '---';
     if ($html) $lines = array_map('esc_html', $lines);
     $br = $html ? '<br>' : "\n";
     $fields['email_content'] = implode($br, $lines) . $br . $fields['email_content'];
@@ -363,7 +418,7 @@ add_filter('elementor_pro/forms/wp_mail_fields', function ($fields, $record) {
         $fields['email_to_cc'] = '';
         $fields['email_to_bcc'] = $r['bcc'];
     }
-    $GLOBALS['ur_rep_reply_to'] = $m['member_email'];
+    $GLOBALS['ur_rep_reply_to'] = $c_email;
     return $fields;
 }, 10, 2);
 
