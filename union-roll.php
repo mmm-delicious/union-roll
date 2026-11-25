@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: UnionRoll
- * Description: Generate QR codes for user check-in and manage events.
- * Version: 3.25.0
+ * Description: A powerful union membership management plugin: member cards and QR event check-in, member-group content access, and Union Rep assignments with routed contact forms.
+ * Version: 3.25.1
  * Author: MMM Delicious
  * Developer: Mark McDonnell
  * Requires at least: 5.0
@@ -24,7 +24,7 @@ $mmm_eci_updater->setBranch('main');
 $mmm_eci_updater->scheduler->checkPeriod = 48; // setCheckPeriod() not available in bundled PUC v5p6
 
 // Constants
-define('MMM_ECI_VERSION', '3.25.0');
+define('MMM_ECI_VERSION', '3.25.1');
 define('MMM_ECI_PATH', plugin_dir_path(__FILE__));
 define('MMM_ECI_URL', plugin_dir_url(__FILE__));
 

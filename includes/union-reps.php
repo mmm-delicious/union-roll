@@ -21,8 +21,33 @@ if (!defined('ABSPATH')) exit;
 const UR_REP_DIVISIONS = ['Hawaii', 'Kauai', 'Maui', 'Oahu'];
 
 function ur_rep_defaults() {
-    return ['reps' => [], 'units' => [], 'divisions' => []];
+    return ['reps' => [], 'units' => [], 'divisions' => [], 'departments' => [], 'unit_departments' => []];
 }
+
+/** Department key: "Dept. of Public Works" and "Department of Public Works" match. */
+function ur_rep_norm_dept($name) {
+    $n = strtolower(remove_accents(wp_strip_all_tags((string) $name)));
+    $n = str_replace(['&', 'dept.', 'dept '], [' and ', 'department', 'department '], $n);
+    return trim(preg_replace('/[^a-z0-9]+/', ' ', $n));
+}
+
+/**
+ * Hawaii Division assigns reps by department, not unit. Starting guess of each Hawaii unit's
+ * department (from the unit names and the April 2026 roster), only where one department clearly
+ * dominates. At-large and mixed units are left out (they go to the Division Director).
+ * Editable under Union Reps; to be confirmed by the Hawaii Division.
+ */
+const UR_REP_HAWAII_UNIT_DEPT_SEED = [
+    '102' => 'DAGS', '103' => 'DOT', '105' => 'DOE', '108' => 'DOE', '109' => 'Hawaii Health Systems Corporation',
+    '111' => 'Hawaii Health Systems Corporation', '112' => 'Hawaii Health Systems Corporation', '115' => 'DOT',
+    '117' => 'Hawaii Health Systems Corporation', '118' => 'Hawaii Health Systems Corporation', '119' => 'DOT',
+    '122' => 'Hawaii Health Systems Corporation', '126' => 'UH', '132' => 'DOE', '136' => 'DOT',
+    '137' => 'Hawaii Health Systems Corporation', '151' => 'Department of Public Works', '153' => 'Department of Public Works',
+    '154' => 'Department of Water Supply', '160' => 'Solid Waste', '162' => 'Department of Public Works',
+    '163' => 'Department of Public Works', '164' => 'Department of Public Works', '165' => 'Department of Parks & Recreation',
+    '167' => 'Department of Public Works', '168' => 'Department of Environmental Management', '169' => 'Solid Waste',
+    '170' => 'Department of Public Works', '171' => 'Department of Water Supply', '172' => 'Department of Environmental Management',
+];
 
 function ur_rep_data() {
     static $d = null;
@@ -86,6 +111,12 @@ function ur_rep_for_user($user_id = null) {
     $d = ur_rep_data();
     $a = $d['units'][$unit] ?? null;
     $division = ur_rep_division_for_unit($unit);
+    if (!$a && $unit !== '' && !empty($d['unit_departments'][$unit])) {
+        // Department-based division (Hawaii): unit → department → rep.
+        $dk = ur_rep_norm_dept($d['unit_departments'][$unit]);
+        $hit = $d['departments'][$division][$dk] ?? null;
+        if ($hit) $a = ['rep' => $hit['rep'], 'division' => $division, 'temporary' => false];
+    }
     $rep = ($a && isset($d['reps'][$a['rep']])) ? $d['reps'][$a['rep']] + ['slug' => $a['rep']] : null;
     return [
         'unit'      => $unit,
@@ -362,7 +393,7 @@ function ur_rep_parse_staff_page($page_id) {
                 preg_match('/\(\d{3}\)\s*\d{3}-\d{4}(?:\s*ext\.?\s*\d+)?/i', $desc, $ph);
                 if ($name === '') continue;
                 $role = (preg_match('/division director/i', $title) && !preg_match('/assistant/i', $title)) ? 'director' : (preg_match('/representative|assistant division director/i', $title) ? 'rep' : 'other');
-                $people[sanitize_title($name)] = [
+                $people[ur_rep_key($em[0] ?? '', $name)] = [
                     'name' => $name, 'title' => $title, 'email' => strtolower($em[0] ?? ''), 'phone' => $ph[0] ?? '',
                     'photo' => (int) ($s['eael_team_member_image']['id'] ?? 0), 'division' => ucfirst(strtolower($m[1])), 'role' => $role,
                 ];
@@ -372,6 +403,183 @@ function ur_rep_parse_staff_page($page_id) {
     };
     $walk($data);
     return $people;
+}
+
+/** Reps are keyed by lowercase email (name slug when there is no email). */
+function ur_rep_key($email, $name = '') {
+    $email = strtolower(trim((string) $email));
+    return $email !== '' ? sanitize_key(str_replace(['@', '.'], ['-at-', '-'], $email)) : sanitize_title($name);
+}
+
+/** Minimal .xlsx reader: first worksheet as rows of [header => value]. Empty cells are placed by column letter. */
+function ur_rep_read_xlsx($path) {
+    if (!class_exists('ZipArchive')) return new WP_Error('zip', 'This server cannot open .xlsx files (ZipArchive missing).');
+    $zip = new ZipArchive();
+    if ($zip->open($path) !== true) return new WP_Error('zip', 'Could not open the file. Is it an .xlsx?');
+    $NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+    $load = function ($xml) {
+        $dom = new DOMDocument();
+        $prev = libxml_use_internal_errors(true);
+        $ok = $dom->loadXML(preg_replace('/^\xEF\xBB\xBF/', '', $xml), LIBXML_NONET);
+        libxml_use_internal_errors($prev);
+        return $ok ? $dom : null;
+    };
+    $text = function (DOMElement $el) use ($NS) {
+        $t = '';
+        foreach ($el->getElementsByTagNameNS($NS, 't') as $node) $t .= $node->textContent;
+        return $t;
+    };
+    $shared = [];
+    if (($ss = $zip->getFromName('xl/sharedStrings.xml')) !== false && ($dom = $load($ss))) {
+        foreach ($dom->getElementsByTagNameNS($NS, 'si') as $si) $shared[] = $text($si);
+    }
+    $sheet = $zip->getFromName('xl/worksheets/sheet1.xml');
+    $zip->close();
+    if ($sheet === false || !($dom = $load($sheet))) return new WP_Error('xlsx', 'No worksheet found in the file.');
+    $col = function ($ref) {
+        $letters = preg_replace('/[^A-Z]/', '', strtoupper($ref));
+        $n = 0;
+        foreach (str_split($letters) as $ch) $n = $n * 26 + (ord($ch) - 64);
+        return $n - 1;
+    };
+    $rows = [];
+    foreach ($dom->getElementsByTagNameNS($NS, 'row') as $row) {
+        $cells = [];
+        $i = 0;
+        foreach ($row->getElementsByTagNameNS($NS, 'c') as $c) {
+            $t = $c->getAttribute('t');
+            $vnode = $c->getElementsByTagNameNS($NS, 'v')->item(0);
+            $v = $vnode ? $vnode->textContent : '';
+            if ($t === 's') $v = $shared[(int) $v] ?? '';
+            elseif ($t === 'inlineStr') $v = $text($c);
+            elseif ($t === '' || $t === 'n') { if (is_numeric($v) && floor((float) $v) == (float) $v) $v = (string) (int) $v; }
+            $idx = $c->hasAttribute('r') ? $col($c->getAttribute('r')) : $i;
+            $cells[$idx] = trim($v);
+            $i = $idx + 1;
+        }
+        $rows[] = $cells;
+    }
+    if (!$rows) return new WP_Error('xlsx', 'The sheet is empty.');
+    $header = array_shift($rows);
+    $out = [];
+    foreach ($rows as $r) {
+        $assoc = [];
+        foreach ($header as $i => $h) $assoc[$h] = $r[$i] ?? '';
+        if (array_filter($assoc, 'strlen')) $out[] = $assoc;
+    }
+    return $out;
+}
+
+/** Plan from the Cognito "Union Representative Assignments" export (the complete list for every division in it). */
+function ur_rep_plan_from_cognito(array $rows) {
+    $need = ['Division2', 'UnitNumber', 'UnitName', 'Name_First', 'Name_Last', 'Email', 'DivisionDirectorEmail'];
+    $missing = array_diff($need, array_keys($rows[0] ?? []));
+    if ($missing) return new WP_Error('cols', 'This doesn\'t look like the Cognito assignments export (missing columns: ' . implode(', ', $missing) . ').');
+    $d = ur_rep_data();
+    $new = $d;
+    $known = array_flip(ur_rep_known_units());
+    $counts = ur_rep_unit_member_counts();
+    $report = ['division' => '', 'effective' => '', 'changes' => [], 'errors' => [], 'notes' => []];
+
+    // 1. Who is who: group rows by normalised name, take each name's most common email.
+    $byname = [];
+    foreach ($rows as $r) {
+        $n = ur_rep_norm_name($r['Name_First'] . ' ' . $r['Name_Last']);
+        $byname[$n]['names'][] = trim($r['Name_First'] . ' ' . $r['Name_Last']);
+        $byname[$n]['emails'][] = strtolower(trim($r['Email']));
+    }
+    $email_of = [];
+    foreach ($byname as $n => $g) {
+        $c = array_count_values(array_filter($g['emails']));
+        arsort($c);
+        $email_of[$n] = (string) key($c);
+    }
+    // 2. Reps (create or refresh from the sheet; Staff page import adds photo/title/extension).
+    $divisions = [];
+    $rows_by_div = [];
+    foreach ($rows as $r) {
+        $div = ucfirst(strtolower(trim($r['Division2'])));
+        if (!in_array($div, UR_REP_DIVISIONS, true)) { $report['errors'][] = 'Row ' . ($r['UnionRepresentativeAssignments_Id'] ?? '?') . ': unknown division "' . $r['Division2'] . '".'; continue; }
+        $divisions[$div] = true;
+        $n = ur_rep_norm_name($r['Name_First'] . ' ' . $r['Name_Last']);
+        $email = $email_of[$n];
+        if (strtolower(trim($r['Email'])) !== $email && trim($r['Email']) !== '') {
+            $report['notes'][] = 'Check Cognito row ' . ($r['UnionRepresentativeAssignments_Id'] ?? '?') . ' (' . $div . ', ' . ($r['UnitNumber'] ?: $r['UnitName']) . '): name is ' . trim($r['Name_First'] . ' ' . $r['Name_Last']) . ' but email is ' . $r['Email'] . '. Using ' . $email . ' (the name).';
+        }
+        $key = ur_rep_key($email, $n);
+        if (!isset($new['reps'][$key])) {
+            $new['reps'][$key] = ['name' => trim($r['Name_First'] . ' ' . $r['Name_Last']), 'title' => 'Union Representative', 'email' => $email,
+                'phone' => trim($r['Phone'] ?? ''), 'photo' => 0, 'division' => $div, 'role' => 'rep'];
+            $report['changes'][] = 'Add rep ' . $new['reps'][$key]['name'] . ' <' . $email . '> (' . $div . ')';
+        }
+        $rows_by_div[$div][] = ['key' => $key, 'unit' => preg_replace('/\D/', '', $r['UnitNumber']), 'unit_name' => trim($r['UnitName']), 'id' => $r['UnionRepresentativeAssignments_Id'] ?? '', 'director' => strtolower(trim($r['DivisionDirectorEmail']))];
+    }
+    // 3. Per division: replace units and departments.
+    foreach (array_keys($divisions) as $div) {
+        $units = []; $depts = [];
+        foreach ($rows_by_div[$div] as $r) {
+            if ($r['unit'] !== '') {
+                if (isset($units[$r['unit']]) && $units[$r['unit']]['rep'] !== $r['key']) {
+                    $report['errors'][] = 'Unit ' . $r['unit'] . ' is assigned to two different reps (' . $new['reps'][$units[$r['unit']]['rep']]['name'] . ' and ' . $new['reps'][$r['key']]['name'] . ').';
+                    continue;
+                }
+                if ($known && !isset($known[$r['unit']])) $report['notes'][] = 'Unit ' . $r['unit'] . ' (' . $r['unit_name'] . ') is not in the website\'s unit list.';
+                $units[$r['unit']] = ['rep' => $r['key'], 'division' => $div, 'temporary' => false];
+            } elseif ($r['unit_name'] !== '') {
+                $depts[ur_rep_norm_dept($r['unit_name'])] = ['name' => $r['unit_name'], 'rep' => $r['key']];
+            }
+        }
+        foreach ($units as $u => $a) {
+            $old = $d['units'][$u]['rep'] ?? '';
+            if ($old !== $a['rep']) $report['changes'][] = $div . ' unit ' . $u . ': ' . ($old ? ($d['reps'][$old]['name'] ?? $old) : '(none)') . ' → ' . $new['reps'][$a['rep']]['name'] . ' · ' . (int) ($counts[$u] ?? 0) . ' members';
+        }
+        foreach ($d['units'] as $u => $a) {
+            if (($a['division'] ?? '') === $div && !isset($units[$u])) {
+                unset($new['units'][$u]);
+                $report['changes'][] = $div . ' unit ' . $u . ': ' . ($d['reps'][$a['rep']]['name'] ?? $a['rep']) . ' → (not in the list; goes to the Division Director) · ' . (int) ($counts[$u] ?? 0) . ' members';
+            }
+        }
+        foreach ($units as $u => $a) $new['units'][$u] = $a;
+        foreach ($depts as $k => $x) {
+            $old = $d['departments'][$div][$k]['rep'] ?? '';
+            if ($old !== $x['rep']) $report['changes'][] = $div . ' department "' . $x['name'] . '": ' . ($old ? ($d['reps'][$old]['name'] ?? $old) : '(none)') . ' → ' . $new['reps'][$x['rep']]['name'];
+        }
+        $new['departments'][$div] = $depts;
+        // Director.
+        $dir_emails = array_count_values(array_filter(array_column($rows_by_div[$div], 'director')));
+        arsort($dir_emails);
+        $dir = (string) key($dir_emails);
+        if ($dir !== '') {
+            $dkey = ur_rep_key($dir);
+            foreach ($new['reps'] as $k => $r) if (($r['role'] ?? '') === 'director' && ($r['division'] ?? '') === $div && $k !== $dkey) $new['reps'][$k]['role'] = 'rep';
+            if (!isset($new['reps'][$dkey])) {
+                $new['reps'][$dkey] = ['name' => $dir, 'title' => 'Division Director', 'email' => $dir, 'phone' => '', 'photo' => 0, 'division' => $div, 'role' => 'director'];
+                $report['notes'][] = $div . ' Division Director ' . $dir . ' is not in the reps list yet; import from the Staff page to add their name and photo.';
+            } else {
+                $new['reps'][$dkey]['role'] = 'director';
+                $new['reps'][$dkey]['division'] = $div;
+            }
+            if ((ur_rep_director($div)['email'] ?? '') !== $dir) $report['changes'][] = $div . ' Division Director (BCC): ' . $dir;
+        }
+        $new['divisions'][$div] = ['effective' => '', 'source' => 'cognito', 'updated' => current_time('mysql')];
+    }
+    // 4. Hawaii-style divisions: unit → department guesses (only if none are set yet).
+    if (isset($divisions['Hawaii']) && !empty($new['departments']['Hawaii']) && empty($d['unit_departments'])) {
+        $new['unit_departments'] = UR_REP_HAWAII_UNIT_DEPT_SEED;
+        $report['notes'][] = 'Hawaii assigns reps by department. A starting guess of each Hawaii unit\'s department was added (' . count(UR_REP_HAWAII_UNIT_DEPT_SEED) . ' units, inferred from unit names; please have the Hawaii Division confirm it under "Unit departments" below).';
+    }
+    foreach ($new['unit_departments'] as $u => $dept) {
+        $div = ur_rep_division_for_unit($u);
+        if (!isset($new['departments'][$div][ur_rep_norm_dept($dept)])) $report['notes'][] = 'Unit ' . $u . ' is mapped to department "' . $dept . '", which has no rep in the list.';
+    }
+    // 5. Units with members and no rep after the change.
+    $orphans = [];
+    foreach ($counts as $u => $n) {
+        if (isset($new['units'][$u]) || isset($new['unit_departments'][$u]) || preg_match('/^\d(48|49|98|99)$/', $u) || in_array($u, ['529', '597', '650'], true)) continue;
+        $orphans[] = $u . ' (' . $n . ')';
+    }
+    if ($orphans) $report['notes'][] = 'Units with members but no rep (messages go to the Division Director): ' . implode(', ', $orphans);
+    return [$new, $report];
 }
 
 function ur_rep_staff_page_id() {
@@ -446,7 +654,8 @@ function ur_rep_plan_from_staff() {
         $old = $d['reps'][$slug] ?? null;
         if (!$old) { $new['reps'][$slug] = $p; $report['changes'][] = 'Add ' . $p['name'] . ' (' . $p['title'] . ', ' . $p['division'] . ')'; continue; }
         $diff = [];
-        foreach (['title', 'email', 'phone', 'photo', 'division', 'role'] as $k) {
+        // The assignment list decides who is a director and which division; the Staff page fills in the rest.
+        foreach (['name', 'title', 'phone', 'photo'] as $k) {
             if ((string) ($old[$k] ?? '') !== (string) $p[$k] && $p[$k] !== '' && $p[$k] !== 0) { $diff[] = $k . ': ' . ($old[$k] ?? '') . ' → ' . $p[$k]; $new['reps'][$slug][$k] = $p[$k]; }
         }
         if ($diff) $report['changes'][] = 'Update ' . $p['name'] . ' (' . implode('; ', $diff) . ')';
@@ -474,11 +683,21 @@ function ur_rep_handle_post() {
 
     if ($act === 'upload') {
         if (empty($_FILES['ur_rep_docx']['tmp_name']) || !is_uploaded_file($_FILES['ur_rep_docx']['tmp_name'])) return 'Choose a .docx file first.';
-        if (!preg_match('/\.docx$/i', (string) $_FILES['ur_rep_docx']['name'])) return 'Please upload the .docx version of the assignments.';
-        $parsed = ur_rep_parse_docx($_FILES['ur_rep_docx']['tmp_name']);
-        if (is_wp_error($parsed)) return $parsed->get_error_message();
-        if ($parsed['division'] === '') return 'Could not find the division name (e.g. "OAHU DIVISION") at the top of the document.';
-        [$new, $report] = ur_rep_plan_from_docx($parsed);
+        $fname = (string) $_FILES['ur_rep_docx']['name'];
+        if (preg_match('/\.xlsx$/i', $fname)) {
+            $rows = ur_rep_read_xlsx($_FILES['ur_rep_docx']['tmp_name']);
+            if (is_wp_error($rows)) return $rows->get_error_message();
+            $plan = ur_rep_plan_from_cognito($rows);
+            if (is_wp_error($plan)) return $plan->get_error_message();
+            [$new, $report] = $plan;
+        } elseif (preg_match('/\.docx$/i', $fname)) {
+            $parsed = ur_rep_parse_docx($_FILES['ur_rep_docx']['tmp_name']);
+            if (is_wp_error($parsed)) return $parsed->get_error_message();
+            if ($parsed['division'] === '') return 'Could not find the division name (e.g. "OAHU DIVISION") at the top of the document.';
+            [$new, $report] = ur_rep_plan_from_docx($parsed);
+        } else {
+            return 'Please upload the Cognito export (.xlsx) or a Unit Assignments document (.docx).';
+        }
         set_transient(ur_rep_pending_key(), ['new' => $new, 'report' => $report, 'kind' => 'docx', 'file' => sanitize_file_name($_FILES['ur_rep_docx']['name'])], HOUR_IN_SECONDS);
         return '';
     }
@@ -531,6 +750,17 @@ function ur_rep_handle_post() {
         ur_rep_save_data($d);
         return 'Reps saved.';
     }
+    if ($act === 'unit_depts') {
+        $d = ur_rep_data();
+        $map = [];
+        foreach (preg_split('/\R/', (string) wp_unslash($_POST['unit_departments'] ?? '')) as $line) {
+            if (preg_match('/^\s*(\d{3})\s*[=:,-]\s*(.+?)\s*$/', $line, $m)) $map[$m[1]] = sanitize_text_field($m[2]);
+        }
+        ksort($map);
+        $d['unit_departments'] = $map;
+        ur_rep_save_data($d);
+        return 'Unit departments saved (' . count($map) . ').';
+    }
     if ($act === 'settings') {
         update_option('ur_rep_settings', [
             'form_name' => sanitize_text_field(wp_unslash($_POST['form_name'] ?? '')) ?: 'Contact my Union Rep',
@@ -570,8 +800,8 @@ function ur_rep_render_admin() {
     }
 
     // Upload + staff import + undo.
-    echo '<h2>Update assignments</h2><p>Upload a division\'s <em>Unit Assignments</em> Word document (.docx) as it comes in. You\'ll see every change before anything is saved.</p>';
-    echo '<form method="post" enctype="multipart/form-data">' . $nonce . '<input type="hidden" name="ur_rep_action" value="upload"><input type="file" name="ur_rep_docx" accept=".docx"> <button class="button button-primary">Upload and preview</button></form>';
+    echo '<h2>Update assignments</h2><p>Upload the <strong>Cognito export</strong> of Union Representative Assignments (.xlsx, the complete list) or one division\'s <em>Unit Assignments</em> Word document (.docx). You\'ll see every change before anything is saved.</p>';
+    echo '<form method="post" enctype="multipart/form-data">' . $nonce . '<input type="hidden" name="ur_rep_action" value="upload"><input type="file" name="ur_rep_docx" accept=".xlsx,.docx"> <button class="button button-primary">Upload and preview</button></form>';
     echo '<p style="margin-top:12px"><form method="post" style="display:inline">' . $nonce . '<input type="hidden" name="ur_rep_action" value="staff"><button class="button">Import names, titles, phones, emails and photos from the Staff page</button></form> ';
     echo '<form method="post" style="display:inline" onsubmit="return confirm(\'Restore the previous version of reps and assignments?\')">' . $nonce . '<input type="hidden" name="ur_rep_action" value="undo"><button class="button"' . (get_option('ur_rep_data_prev') ? '' : ' disabled') . '>Undo last change</button></form></p>';
 
@@ -591,6 +821,20 @@ function ur_rep_render_admin() {
             echo '<tr><td>' . esc_html($d['reps'][$slug]['name'] ?? $slug) . '</td><td>' . esc_html(implode(', ', $units)) . '</td></tr>';
         }
         echo '</tbody></table>';
+    }
+
+    // Department-based divisions (Hawaii).
+    if (!empty($d['departments'])) {
+        echo '<h2>Unit departments</h2><p>Some divisions (Hawaii) assign reps by department instead of unit. Each line maps a unit to one of the department names in the assignments list, e.g. <code>105 = DOE</code>. Units not listed (and at-large units) go to the Division Director.</p>';
+        foreach ($d['departments'] as $div => $deps) {
+            if (!$deps) continue;
+            $names = [];
+            foreach ($deps as $x) $names[] = $x['name'] . ' → ' . ($d['reps'][$x['rep']]['name'] ?? $x['rep']);
+            echo '<p><strong>' . esc_html($div) . ' departments:</strong> ' . esc_html(implode('; ', $names)) . '</p>';
+        }
+        $lines = [];
+        foreach ($d['unit_departments'] as $u => $dept) $lines[] = $u . ' = ' . $dept;
+        echo '<form method="post">' . $nonce . '<input type="hidden" name="ur_rep_action" value="unit_depts"><textarea name="unit_departments" rows="12" cols="70">' . esc_textarea(implode("\n", $lines)) . '</textarea><p><button class="button button-primary">Save unit departments</button></p></form>';
     }
 
     // Reps list (editable).

@@ -1,20 +1,29 @@
 === UnionRoll ===
 Contributors: mmmdelicious
-Tags: event, check-in, qr code, barcode, guest list
+Tags: union, membership, member access, check-in, qr code
 Requires at least: 5.0
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 3.25.0
+Stable tag: 3.25.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-Generate QR codes for event check-in and manage events with a live dashboard, guest list, and barcode scanning.
+A powerful union membership management plugin: member cards and QR event check-in, member-group content access, and Union Rep assignments with routed contact forms.
 
 == Description ==
 
-UnionRoll lets you create events, import guest lists from CSV, and check guests in via QR code, barcode, or phone number lookup. Includes a live admin dashboard with charts and sortable tables.
+UnionRoll is a membership management toolkit for unions:
+
+* Member cards with QR codes, events, guest lists and check-in by QR, barcode or phone lookup, with a live dashboard.
+* Member Groups: restrict posts, pages, media and protected contracts by bargaining unit, unit number, employer, job title or island; For You page; view-as-member preview.
+* Union Reps: each member sees their Union Representative, and the contact form routes to that rep with the Division Director on BCC. Assignments are updated by uploading the Cognito export.
 
 == Changelog ==
+
+= 3.25.1 =
+* Union Reps: upload the Cognito "Union Representative Assignments" export (.xlsx) as the complete list; reps keyed by email, Division Directors from the DivisionDirectorEmail column, rows with mismatched emails flagged.
+* Department-based divisions (Hawaii): department assignments plus an editable unit → department map (starting guess for 30 Hawaii units, to be confirmed).
+* New plugin description: a union membership management plugin, not just QR codes.
 
 = 3.25.0 =
 * New: Union Reps (UnionRoll → Union Reps). Members see their Union Representative (photo, name, title, phone) from their unit number via [ur_my_rep] and in For You.
