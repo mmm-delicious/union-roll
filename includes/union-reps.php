@@ -365,52 +365,97 @@ add_filter('elementor_pro/forms/record/actions_before', function ($record, $ajax
     return $record;
 }, 10, 2);
 
+/**
+ * Branded HTML email (inline styles for mail clients): navy header, detail rows, message box.
+ * @param array $rows [label => value] (plain text; escaped here)
+ */
+function ur_rep_email_html($heading, $intro, array $rows, $subject, $message, $footer) {
+    $tr = '';
+    foreach ($rows as $label => $value) {
+        if ($value === '' || $value === null) continue;
+        $v = esc_html($value);
+        if (is_email($value)) $v = '<a href="mailto:' . esc_attr($value) . '" style="color:#1C244B">' . $v . '</a>';
+        elseif (($tel = ur_rep_phone_link($value)) !== '') $v = '<a href="' . esc_attr($tel) . '" style="color:#1C244B">' . $v . '</a>';
+        $tr .= '<tr><td style="padding:8px 12px 8px 0;color:#6b7a90;font-size:14px;white-space:nowrap;vertical-align:top">' . esc_html($label) . '</td>'
+            . '<td style="padding:8px 0;color:#1C244B;font-size:15px;font-weight:600">' . $v . '</td></tr>';
+    }
+    return '<!doctype html><html><body style="margin:0;padding:0;background:#F3F5F8">'
+        . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F3F5F8;padding:24px 0"><tr><td align="center">'
+        . '<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:8px;overflow:hidden;font-family:Poppins,Helvetica,Arial,sans-serif">'
+        . '<tr><td style="background:#1C244B;border-bottom:4px solid #D3C89D;padding:22px 28px">'
+        . '<div style="color:#D3C89D;font-size:12px;font-weight:600;letter-spacing:2px;text-transform:uppercase">United Public Workers</div>'
+        . '<div style="color:#ffffff;font-size:22px;font-weight:600;margin-top:4px">' . esc_html($heading) . '</div></td></tr>'
+        . '<tr><td style="padding:24px 28px 8px;color:#324A6D;font-size:15px;line-height:1.6">' . $intro . '</td></tr>'
+        . ($tr ? '<tr><td style="padding:0 28px"><table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-top:1px solid #e3e8ef;border-bottom:1px solid #e3e8ef">' . $tr . '</table></td></tr>' : '')
+        . '<tr><td style="padding:20px 28px 4px"><div style="color:#6b7a90;font-size:13px;text-transform:uppercase;letter-spacing:1px">Subject</div>'
+        . '<div style="color:#1C244B;font-size:17px;font-weight:600;margin-top:2px">' . esc_html($subject) . '</div></td></tr>'
+        . '<tr><td style="padding:12px 28px 24px"><div style="background:#F9FAFD;border-left:4px solid #D3C89D;border-radius:4px;padding:16px 18px;color:#1C244B;font-size:15px;line-height:1.6">'
+        . nl2br(esc_html($message)) . '</div></td></tr>'
+        . '<tr><td style="background:#F9FAFD;padding:16px 28px;color:#6b7a90;font-size:13px;line-height:1.5">' . $footer . '</td></tr>'
+        . '</table></td></tr></table></body></html>';
+}
+
 add_filter('elementor_pro/forms/wp_mail_fields', function ($fields, $record) {
     if (!ur_rep_is_our_form($record) || !is_user_logged_in()) return $fields;
     $r = ur_rep_route();
     if (!$r || empty($r['to'])) return $fields;
     $s = ur_rep_settings();
-    // The member's copy (Elementor "Email 2" action, To = [field id="contact_email"]).
-    $copy_to = trim((string) $fields['email_to']);
-    $typed = ur_rep_field($record, 'contact_email');
-    if (strcasecmp($copy_to, $r['member']['member_email']) === 0 || ($typed !== '' && strcasecmp($copy_to, $typed) === 0)) {
-        if (!is_email($copy_to)) $copy_to = $r['member']['member_email'];
-        $fields['email_to'] = $copy_to;
-        $fields['email_to_cc'] = '';
-        $fields['email_to_bcc'] = '';
-        if (!empty($s['test_mode']) || !empty($r['preview'])) {
-            $fields['email_subject'] = '[TEST copy → ' . $copy_to . '] ' . $fields['email_subject'];
-            $fields['email_to'] = sanitize_email($s['test_recipient']) ?: wp_get_current_user()->user_email;
-        }
-        $GLOBALS['ur_rep_reply_to'] = $r['to']; // the member can reply straight to their rep
-        return $fields;
-    }
-
     $m = $r['member'];
-    $html = strpos((string) $fields['email_content'], '<br>') !== false;
+    $test = !empty($s['test_mode']) || !empty($r['preview']);
+    $test_to = sanitize_email($s['test_recipient']) ?: wp_get_current_user()->user_email;
+
     $c_name  = ur_rep_field($record, 'contact_name') ?: $m['member_name'];
     $c_email = ur_rep_field($record, 'contact_email');
     $c_phone = ur_rep_field($record, 'contact_phone');
     $best    = ur_rep_field($record, 'best_contact');
     if ($c_email === '' || !is_email($c_email)) $c_email = $m['member_email'];
     if ($c_phone === '') $c_phone = $m['member_phone'];
-    $lines = [
-        'Message from ' . $c_name . ' (unit ' . ($m['member_unit'] ?: 'unknown') . ')',
-        ($best !== '' ? 'Best way to reach them: ' . $best . ' · ' : '') . 'Email: ' . $c_email . ($c_phone ? ' · Phone: ' . $c_phone : ''),
-    ];
-    if (strcasecmp($c_email, $m['member_email']) !== 0 || ($m['member_phone'] && $c_phone !== $m['member_phone'])) {
-        $lines[] = 'On their website account: ' . $m['member_email'] . ($m['member_phone'] ? ' · ' . $m['member_phone'] : '');
-    }
-    $lines[] = 'Reply to this email to answer the member directly.';
-    $lines[] = '---';
-    if ($html) $lines = array_map('esc_html', $lines);
-    $br = $html ? '<br>' : "\n";
-    $fields['email_content'] = implode($br, $lines) . $br . $fields['email_content'];
+    $subject = ur_rep_field($record, 'subject');
+    $message = ur_rep_field($record, 'message');
+    $rep = $r['ctx']['rep'] ?: $r['ctx']['director'];
+    $GLOBALS['ur_rep_html'] = true;
 
-    if (!empty($s['test_mode']) || !empty($r['preview'])) {
-        $test = sanitize_email($s['test_recipient']) ?: wp_get_current_user()->user_email;
+    // The member's copy (Elementor "Email 2" action, To = [field id="contact_email"]).
+    $copy_to = trim((string) $fields['email_to']);
+    if (strcasecmp($copy_to, $m['member_email']) === 0 || strcasecmp($copy_to, $c_email) === 0 || strcasecmp($copy_to, ur_rep_field($record, 'contact_email')) === 0) {
+        if (!is_email($copy_to)) $copy_to = $m['member_email'];
+        $first = trim(explode(' ', $c_name)[0]);
+        $rows = $rep ? ['Your rep' => $rep['name'], 'Phone' => (string) ($rep['phone'] ?? '')] : [];
+        $fields['email_subject'] = 'Copy of your message to your Union Representative' . ($subject !== '' ? ': ' . $subject : '');
+        $fields['email_content'] = ur_rep_email_html(
+            'Your message was sent',
+            'Aloha ' . esc_html($first) . ',<br>Thank you for reaching out. Your Union Representative has your message' . ($best !== '' ? ' and will get back to you by <strong>' . esc_html(strtolower($best)) . '</strong>' : '') . '.',
+            $rows, $subject, $message,
+            'To add anything, just reply to this email and it will go to your rep.'
+        );
+        $fields['email_to'] = $test ? $test_to : $copy_to;
+        if ($test) $fields['email_subject'] = '[TEST copy → ' . $copy_to . '] ' . $fields['email_subject'];
+        $fields['email_to_cc'] = '';
+        $fields['email_to_bcc'] = '';
+        $GLOBALS['ur_rep_reply_to'] = $r['to']; // the member can reply straight to their rep
+        return $fields;
+    }
+
+    // The message to the rep (BCC the Division Director).
+    $rows = [
+        'Member'      => $c_name,
+        'Unit'        => trim(($m['member_unit'] ?: 'unknown') . ($r['ctx']['division'] ? ' · ' . $r['ctx']['division'] . ' Division' : '')),
+        'Best way to reach' => $best,
+        'Email'       => $c_email,
+        'Phone'       => $c_phone,
+    ];
+    if (strcasecmp($c_email, $m['member_email']) !== 0) $rows['Account email'] = $m['member_email'];
+    if ($m['member_phone'] && $c_phone !== $m['member_phone']) $rows['Account phone'] = $m['member_phone'];
+    $fields['email_subject'] = 'Member message from ' . $c_name . ($subject !== '' ? ': ' . $subject : '');
+    $fields['email_content'] = ur_rep_email_html(
+        'New message from a member',
+        'A member sent you a message through the website' . ($rep ? ', ' . esc_html(trim(explode(' ', $rep['name'])[0])) : '') . '.',
+        $rows, $subject, $message,
+        'Reply to this email to answer ' . esc_html($c_name) . ' directly. Sent from the Contact my Union Representative form' . ($r['bcc'] ? '; your Division Director receives a copy' : '') . '. Saved under Elementor → Submissions.'
+    );
+    if ($test) {
         $fields['email_subject'] = '[TEST → ' . $r['to'] . ($r['bcc'] ? ', BCC ' . $r['bcc'] : '') . '] ' . $fields['email_subject'];
-        $fields['email_to'] = $test ?: get_option('admin_email');
+        $fields['email_to'] = $test_to ?: get_option('admin_email');
         $fields['email_to_cc'] = '';
         $fields['email_to_bcc'] = '';
     } else {
@@ -422,11 +467,13 @@ add_filter('elementor_pro/forms/wp_mail_fields', function ($fields, $record) {
     return $fields;
 }, 10, 2);
 
-// Reply-To = the member, so the rep can answer directly. (Elementor builds Reply-To before the fields filter.)
+// Reply-To = the member (or the rep, on the member's copy); always send our emails as HTML.
 add_filter('elementor_pro/forms/wp_mail_headers', function ($headers) {
+    if (!is_string($headers)) return $headers;
     $to = $GLOBALS['ur_rep_reply_to'] ?? '';
-    if (!$to || !is_string($headers) || !is_email($to)) return $headers;
-    return preg_replace('/^Reply-To:.*$/mi', 'Reply-To: ' . $to, $headers);
+    if ($to && is_email($to)) $headers = preg_replace('/^Reply-To:.*$/mi', 'Reply-To: ' . $to, $headers);
+    if (!empty($GLOBALS['ur_rep_html']) && stripos($headers, 'Content-Type:') === false) $headers .= "Content-Type: text/html; charset=UTF-8\r\n";
+    return $headers;
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

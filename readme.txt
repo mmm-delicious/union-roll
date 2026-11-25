@@ -4,7 +4,7 @@ Tags: union, membership, member access, check-in, qr code
 Requires at least: 5.0
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 3.25.9
+Stable tag: 3.26.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -19,6 +19,11 @@ UnionRoll is a membership management toolkit for unions:
 * Union Reps: each member sees their Union Representative, and the contact form routes to that rep with the Division Director on BCC. Assignments are updated by uploading the Cognito export.
 
 == Changelog ==
+
+= 3.26.0 =
+* Rep contact emails are branded HTML: navy UPW header, member details (name, unit and division, best way to reach, email and phone, account details when different), the subject and message in a highlighted box, and a clear reply note.
+* The member's copy is a matching email naming their rep and phone, with Reply-To set to the rep.
+* Subjects: "Member message from <name>: <subject>" and "Copy of your message to your Union Representative: <subject>".
 
 = 3.25.9 =
 * Rep contact form: visible, editable contact fields (contact_name, contact_email, contact_phone) pre-filled from the member's account; phone required when they ask for a call or text, email when they ask for email.
