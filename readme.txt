@@ -4,7 +4,7 @@ Tags: event, check-in, qr code, barcode, guest list
 Requires at least: 5.0
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 3.24.6
+Stable tag: 3.24.7
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -15,6 +15,9 @@ Generate QR codes for event check-in and manage events with a live dashboard, gu
 UnionRoll lets you create events, import guest lists from CSV, and check guests in via QR code, barcode, or phone number lookup. Includes a live admin dashboard with charts and sortable tables.
 
 == Changelog ==
+
+= 3.24.7 =
+* For You: headings match the site's Elementor type. Section title is Poppins 600 at 40px (28px on mobile), centred; card titles and the membership card title are Poppins 600 at 25px; body text Poppins 300.
 
 = 3.24.6 =
 * For You: protected files are split into "Your contracts" (CBAs, contracts, agreements, contract summaries) and "Letters & documents" (letters, notices, grievances, schedules). Filter: ur_mg_is_contract.

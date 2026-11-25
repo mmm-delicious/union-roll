@@ -713,16 +713,21 @@ add_shortcode('ur_for_you', function ($atts) {
     $cols = ['contracts' => 'Your contracts', 'documents' => 'Letters & documents', 'news' => 'News for your unit', 'events' => 'Your upcoming meetings'];
     // Matches the site's Elementor look: navy cards (primary #1C244B), white headings,
     // light text, white links with a gold (#D3C89D) hover, gold buttons with white text (hover: white with gold text).
-    $html = '<style>.ur-for-you{max-width:1140px;margin:0 auto;padding:40px 20px}.ur-for-you h2{margin:0 0 6px;color:var(--e-global-color-primary,#1C244B)}.ur-for-you .ur-fy-sub{margin:0 0 22px;color:var(--e-global-color-text,#324A6D)}'
+    // Type follows the page's Elementor headings: section title like "We Got Your Back"
+    // (Poppins 600, 40px / 28px mobile), card titles like the call-to-action titles (Poppins 600, 25px).
+    $html = '<style>.ur-for-you{max-width:1140px;margin:0 auto;padding:40px 20px;font-family:Poppins,sans-serif}'
+        . '.ur-for-you h2{margin:0 0 10px;font-family:Poppins,sans-serif;font-size:40px;font-weight:600;line-height:1.2;text-align:center;color:var(--e-global-color-primary,#1C244B)}'
+        . '.ur-for-you .ur-fy-sub{margin:0 0 28px;text-align:center;font-size:16px;font-weight:300;line-height:1.5;color:var(--e-global-color-text,#324A6D)}'
         . '.ur-fy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px}'
         . '.ur-for-you .ur-fy-card{background:var(--e-global-color-primary,#1C244B);color:#F3F5F8;border-top:4px solid #D3C89D;border-radius:6px;padding:20px 22px}'
-        . '.ur-for-you .ur-fy-card h3{font-size:1.1em;margin:0 0 10px;color:#fff}.ur-fy-card ul{list-style:none;margin:0;padding:0}.ur-fy-card li{padding:10px 0;border-top:1px solid rgba(255,255,255,.15)}'
+        . '.ur-for-you .ur-fy-card h3{font-family:Poppins,sans-serif;font-size:25px;font-weight:600;line-height:1.2;margin:0 0 12px;color:#fff}.ur-for-you .ur-fy-card li{font-size:16px;font-weight:300;line-height:1.5}.ur-fy-card ul{list-style:none;margin:0;padding:0}.ur-fy-card li{padding:10px 0;border-top:1px solid rgba(255,255,255,.15)}'
         . '.ur-fy-card li:first-child{border-top:0}.ur-for-you .ur-fy-card small{display:block;margin-top:2px;color:#C8D5DC}'
         . '.ur-for-you .ur-fy-card a{color:#fff;font-weight:600;text-decoration:none}.ur-for-you .ur-fy-card a:hover,.ur-for-you .ur-fy-card a:focus{color:#D3C89D;text-decoration:underline}'
         . '.ur-for-you .ur-fy-member-card{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:0 0 20px;padding:18px 22px;border-radius:6px;background:#11274A;color:#F3F5F8;border-left:4px solid #D3C89D}'
-        . '.ur-for-you .ur-fy-member-card strong{display:block;font-size:1.1em;color:#fff}'
+        . '.ur-for-you .ur-fy-member-card strong{display:block;font-family:Poppins,sans-serif;font-size:25px;font-weight:600;line-height:1.2;margin-bottom:4px;color:#fff}.ur-for-you .ur-fy-member-card span{font-weight:300}'
         . '.ur-for-you .ur-fy-member-card a{background:#D3C89D;color:#fff;padding:10px 22px;border-radius:4px;text-decoration:none;font-weight:700;white-space:nowrap}'
-        . '.ur-for-you .ur-fy-member-card a:hover,.ur-for-you .ur-fy-member-card a:focus{background:#fff;color:#D3C89D}</style>';
+        . '.ur-for-you .ur-fy-member-card a:hover,.ur-for-you .ur-fy-member-card a:focus{background:#fff;color:#D3C89D}'
+        . '@media (max-width:767px){.ur-for-you h2{font-size:28px;line-height:1.1}.ur-for-you .ur-fy-card h3,.ur-for-you .ur-fy-member-card strong{font-size:22px}}</style>';
     $html .= '<section id="for-you" class="ur-for-you"><h2>' . esc_html($atts['title']) . '</h2>'
         . ($has ? '<p class="ur-fy-sub">Contracts, letters, news and meetings for your unit and division.</p>' : '');
     if ($card) {
