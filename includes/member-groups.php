@@ -236,7 +236,12 @@ function ur_mg_user_context($user_id = null) {
     // Admin "view as" preview (front end only): the admin is treated as the chosen member or group.
     if ($user_id === get_current_user_id() && ($va = ur_mg_view_as())) {
         if ($va['mode'] === 'user' && $va['id'] !== $user_id) return $cache[$user_id] = ur_mg_user_context($va['id']);
-        if ($va['mode'] === 'group') return $cache[$user_id] = ['staff' => false, 'groups' => [$va['id']], 'blocked' => false];
+        if ($va['mode'] === 'group') {
+            // A real member of this group is almost always in some other groups too (e.g. EMS
+            // members are BU 10 and Oahu), so include the groups nearly all of its members share.
+            $groups = array_values(array_unique(array_merge([$va['id']], ur_mg_group_companions()[$va['id']] ?? [])));
+            return $cache[$user_id] = ['staff' => false, 'groups' => $groups, 'blocked' => false];
+        }
     }
 
     $user = get_userdata($user_id);
@@ -632,14 +637,15 @@ function ur_mg_for_you_items($user_id, $limit = 5) {
     $ctx = ur_mg_user_context($user_id);
     if ($ctx['staff'] || !$ctx['groups']) return null;
     $ids = ur_mg_objects_in_groups($ctx['groups']);
-    $out = ['contracts' => [], 'news' => [], 'events' => []];
+    $out = ['contracts' => [], 'documents' => [], 'news' => [], 'events' => []];
     if (!$ids) return $out;
     $now = current_time('mysql');
     foreach ($ids as $id) {
         $p = get_post($id);
         if (!$p) continue;
         if ($p->post_type === 'attachment' && ($k = get_post_meta($id, '_wpmem_dp_key', true))) {
-            $out['contracts'][] = ['title' => $p->post_title, 'url' => add_query_arg(['a' => 'download', 'key' => $k], home_url('/')), 'sort' => $p->post_title];
+            $bucket = ur_mg_is_contract($p) ? 'contracts' : 'documents';
+            $out[$bucket][] = ['title' => $p->post_title, 'url' => add_query_arg(['a' => 'download', 'key' => $k], home_url('/')), 'sort' => $p->post_title];
         } elseif ($p->post_type === 'post' && $p->post_status === 'publish') {
             $out['news'][] = ['title' => $p->post_title, 'url' => get_permalink($p), 'sort' => $p->post_date, 'meta' => get_the_date('', $p)];
         } elseif ($p->post_type === 'tribe_events' && $p->post_status === 'publish') {
@@ -650,10 +656,22 @@ function ur_mg_for_you_items($user_id, $limit = 5) {
         }
     }
     usort($out['contracts'], function ($a, $b) { return strcasecmp($a['sort'], $b['sort']); });
+    usort($out['documents'], function ($a, $b) { return strcasecmp($a['sort'], $b['sort']); });
     usort($out['news'], function ($a, $b) { return strcmp($b['sort'], $a['sort']); });
     usort($out['events'], function ($a, $b) { return strcmp($a['sort'], $b['sort']); });
     foreach ($out as $k => $v) $out[$k] = array_slice($v, 0, $limit);
     return $out;
+}
+
+/**
+ * Is this protected file a contract (CBA, contract, agreement or contract summary)?
+ * Decided from the title and file name; anything else (letters, notices, grievances,
+ * schedules) is listed under "Letters & documents". Override with the ur_mg_is_contract filter.
+ */
+function ur_mg_is_contract(WP_Post $p) {
+    $hay = $p->post_title . ' ' . basename((string) get_post_meta($p->ID, '_wp_attached_file', true));
+    $is  = (bool) preg_match('/\bCBA\b|contract|agreement/i', $hay) && !preg_match('/cease|desist|grievance|complaint/i', $hay);
+    return (bool) apply_filters('ur_mg_is_contract', $is, $p);
 }
 
 /** The page that shows the member's UnionRoll QR card ([mmm_user_qr]), or '' if none. Cached a day. */
@@ -692,7 +710,7 @@ add_shortcode('ur_for_you', function ($atts) {
     $card  = ur_mg_membership_card_url();
     $has   = $items && array_filter($items);
     if (!$has && !$card) return '';
-    $cols = ['contracts' => 'Your contracts', 'news' => 'News for your unit', 'events' => 'Your upcoming meetings'];
+    $cols = ['contracts' => 'Your contracts', 'documents' => 'Letters & documents', 'news' => 'News for your unit', 'events' => 'Your upcoming meetings'];
     // Matches the site's Elementor look: navy cards (primary #1C244B), white headings,
     // light text, white links with a gold (#D3C89D) hover, gold buttons with white text (hover: white with gold text).
     $html = '<style>.ur-for-you{max-width:1140px;margin:0 auto;padding:40px 20px}.ur-for-you h2{margin:0 0 6px;color:var(--e-global-color-primary,#1C244B)}.ur-for-you .ur-fy-sub{margin:0 0 22px;color:var(--e-global-color-text,#324A6D)}'
@@ -706,7 +724,7 @@ add_shortcode('ur_for_you', function ($atts) {
         . '.ur-for-you .ur-fy-member-card a{background:#D3C89D;color:#fff;padding:10px 22px;border-radius:4px;text-decoration:none;font-weight:700;white-space:nowrap}'
         . '.ur-for-you .ur-fy-member-card a:hover,.ur-for-you .ur-fy-member-card a:focus{background:#fff;color:#D3C89D}</style>';
     $html .= '<section id="for-you" class="ur-for-you"><h2>' . esc_html($atts['title']) . '</h2>'
-        . ($has ? '<p class="ur-fy-sub">Contracts, news and meetings for your unit and division.</p>' : '');
+        . ($has ? '<p class="ur-fy-sub">Contracts, letters, news and meetings for your unit and division.</p>' : '');
     if ($card) {
         $html .= '<div class="ur-fy-member-card"><span><strong>Your membership card</strong>Show your QR code to check in at union meetings and events.</span>'
             . '<a href="' . esc_url($card) . '">Open my card</a></div>';
@@ -1052,15 +1070,29 @@ function ur_mg_save_term_rules($term_id) {
     if (isset($_POST['ur_mg_match'])) {
         update_term_meta($term_id, 'ur_mg_match', wp_unslash($_POST['ur_mg_match']) === 'all' ? 'all' : 'any');
     }
-    delete_transient('ur_mg_member_counts');
+    delete_transient('ur_mg_member_stats');
 }
 add_action('created_' . UR_MG_TAX, 'ur_mg_save_term_rules');
 add_action('edited_' . UR_MG_TAX, 'ur_mg_save_term_rules');
 
 /** term_id => number of registered (non-staff, non-blocked) members matching. Cached 10 min. */
+/** Share of a group's members that must also be in another group for group preview to include it. */
+const UR_MG_COMPANION_SHARE = 0.9;
+
 function ur_mg_member_counts() {
-    $cached = get_transient('ur_mg_member_counts');
-    if (is_array($cached)) return $cached;
+    return ur_mg_member_stats()['counts'];
+}
+
+/** [group term id => [other group ids that at least 90% of its members are also in]]. */
+function ur_mg_group_companions() {
+    return ur_mg_member_stats()['companions'];
+}
+
+function ur_mg_member_stats() {
+    static $stats = null;
+    if ($stats !== null) return $stats;
+    $cached = get_transient('ur_mg_member_stats');
+    if (is_array($cached) && isset($cached['counts'], $cached['companions'])) return $stats = $cached;
     global $wpdb;
     $keys = ['bargaining_unit', 'unit_number', 'island', 'employer', 'jurisdiction', 'job_title', 'member_status'];
     $in   = implode(',', array_fill(0, count($keys), '%s'));
@@ -1069,14 +1101,22 @@ function ur_mg_member_counts() {
     foreach ($rows as $r) $profiles[(int) $r['user_id']][$r['meta_key']] = $r['meta_value'];
     $groups = ur_mg_groups(true);
     $counts = array_fill_keys(array_keys($groups), 0);
+    $pairs  = [];
     foreach ($profiles as $p) {
         if (ur_mg_status_blocked($p['member_status'] ?? '')) continue;
+        $in = [];
         foreach ($groups as $tid => $g) {
-            if (ur_mg_profile_matches($p, $g)) $counts[$tid]++;
+            if (ur_mg_profile_matches($p, $g)) { $counts[$tid]++; $in[] = $tid; }
         }
+        foreach ($in as $a) foreach ($in as $b) if ($a !== $b) $pairs[$a][$b] = ($pairs[$a][$b] ?? 0) + 1;
     }
-    set_transient('ur_mg_member_counts', $counts, 10 * MINUTE_IN_SECONDS);
-    return $counts;
+    $companions = [];
+    foreach ($pairs as $a => $bs) {
+        foreach ($bs as $b => $n) if ($n >= UR_MG_COMPANION_SHARE * $counts[$a]) $companions[$a][] = $b;
+    }
+    $stats = ['counts' => $counts, 'companions' => $companions];
+    set_transient('ur_mg_member_stats', $stats, 10 * MINUTE_IN_SECONDS);
+    return $stats;
 }
 
 add_filter('manage_edit-' . UR_MG_TAX . '_columns', function ($cols) {
@@ -1142,7 +1182,7 @@ function ur_mg_render_settings_page() {
             'denied_message'   => sanitize_textarea_field(wp_unslash($_POST['denied_message'] ?? '')),
             'for_you_url'      => esc_url_raw(wp_unslash($_POST['for_you_url'] ?? '')),
         ], false);
-        delete_transient('ur_mg_member_counts');
+        delete_transient('ur_mg_member_stats');
         $notice = 'Settings saved.';
     }
 
@@ -1289,7 +1329,12 @@ function ur_mg_view_as_label($va) {
         return $who . ': ' . ($names ? implode(', ', $names) : 'no groups, sees only unrestricted content');
     }
     $t = get_term($va['id'], UR_MG_TAX);
-    return 'group "' . ($t && !is_wp_error($t) ? $t->name : '#' . $va['id']) . '" only (For You and My division are approximate in group mode)';
+    $label = 'group "' . ($t && !is_wp_error($t) ? $t->name : '#' . $va['id']) . '"';
+    $also = [];
+    $all = ur_mg_groups();
+    foreach (ur_mg_group_companions()[$va['id']] ?? [] as $tid) if (isset($all[$tid])) $also[] = $all[$tid]['term']->name;
+    return $label . ($also ? ' plus the groups nearly all its members are also in (' . implode(', ', $also) . ')' : '')
+        . '. For an exact view, preview a real member.';
 }
 
 // Red banner on every front-end page while previewing.
